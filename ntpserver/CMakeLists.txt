@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/ntpserver/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/ntpserver/**/*.hpp"
 )
 
 set(NTPSERVER_SOURCES

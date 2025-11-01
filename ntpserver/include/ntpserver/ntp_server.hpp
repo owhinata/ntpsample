@@ -9,14 +9,23 @@
 
 namespace ntpserver {
 
-// Abstract time source. Returns current time as UNIX seconds (UTC).
+/**
+ * Interface for time sources.
+ *
+ * Provides current time as UNIX seconds (UTC, since 1970-01-01T00:00:00Z).
+ */
 class TimeSource {
  public:
   virtual ~TimeSource() = default;
-  virtual double NowUnix() = 0;  // seconds since 1970-01-01T00:00:00Z
+  /** Returns the current time in seconds since the UNIX epoch. */
+  virtual double NowUnix() = 0;
 };
 
-// Minimal NTP server. UDP/IPv4, NTPv4 server mode (4), stratum 1 (local).
+/**
+ * Minimal NTPv4 server (UDP/IPv4).
+ *
+ * Server operates in mode 4 (server). Default stratum is 1 (local reference).
+ */
 class NTP_SERVER_API NtpServer {
  public:
   NtpServer();
@@ -25,20 +34,21 @@ class NTP_SERVER_API NtpServer {
   NtpServer(const NtpServer&) = delete;
   NtpServer& operator=(const NtpServer&) = delete;
 
-  // Start serving on `port` (default 9123). Returns true on success.
+  /** Starts serving on the given UDP port (default: 9123). */
   bool Start(uint16_t port = 9123);
 
-  // Stop the server. Safe to call multiple times.
+  /** Stops the server. Safe to call multiple times. */
   void Stop();
 
-  // Set external time source. If not set, an internal monotonic-backed
-  // user time source is used (see user_time.hpp).
+  /** Sets an external time source used for timestamps. */
   void SetTimeSource(TimeSource* src);
 
-  // Optional tunables.
-  void SetStratum(uint8_t stratum);     // default 1
-  void SetPrecision(int8_t precision);  // default -20
-  void SetRefId(uint32_t ref_id_be);    // network-order 4CC, default "LOCL"
+  /** Sets stratum (default 1). */
+  void SetStratum(uint8_t stratum);
+  /** Sets precision exponent (default -20). */
+  void SetPrecision(int8_t precision);
+  /** Sets reference ID (network byte order, default: "LOCL"). */
+  void SetRefId(uint32_t ref_id_be);
 
  private:
   class Impl;

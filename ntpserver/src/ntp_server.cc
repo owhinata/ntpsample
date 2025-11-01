@@ -1,5 +1,8 @@
 // Copyright (c) 2025 <Your Name>
-// Minimal NTPv4 server implementation for Windows (UDP/IPv4)
+/**
+ * @file ntp_server.cc
+ * @brief Minimal NTPv4 server implementation for Windows (UDP/IPv4).
+ */
 #include "ntpserver/ntp_server.hpp"
 
 #include <winsock2.h>

@@ -71,6 +71,21 @@ class WinsockGuard {
 };
 }  // namespace
 
+/**
+ * @test NtpServerTest.RespondsWithServerModeAndEchoesOrigTimestamp
+ * @brief Verify that the server answers in mode 4 and echoes t1.
+ *
+ * @steps
+ * 1. Start NtpServer on a test port with a fixed FakeTimeSource.
+ * 2. Send a client-mode NTP request from localhost.
+ * 3. Receive the response and parse header/timestamps.
+ *
+ * @expected
+ * - li_vn_mode indicates VN=4 and Mode=4 (server).
+ * - stratum equals 1 (default).
+ * - orig_timestamp equals request's tx_timestamp (echoed).
+ * - recv/tx timestamps match the fixed time source.
+ */
 TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
   WinsockGuard wsg;
 

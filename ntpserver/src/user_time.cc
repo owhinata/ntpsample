@@ -1,5 +1,8 @@
 // Copyright (c) 2025 <Your Name>
-// Windows-specific implementation of UserTime using QPC
+/**
+ * @file user_time.cc
+ * @brief Windows-specific implementation of UserTime using QPC.
+ */
 #include "ntpserver/user_time.hpp"
 
 #include <windows.h>
