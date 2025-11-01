@@ -12,7 +12,6 @@ Prerequisites
 ### Visual Studio 生成（x64）
 
 ```bash
-rm -rf build
 cmake -S ntpserver -B build -G "Visual Studio 17 2022" -A x64 -D NTP_SERVER_BUILD_EXAMPLE=ON
 cmake --build build --config Release
 ```
@@ -28,3 +27,9 @@ cmake --build build --config Release
 ```
 
 既定では UDP ポート `9123` で待受します。
+
+### テストの実行
+
+```bash
+ctest --test-dir build -C Release
+```
