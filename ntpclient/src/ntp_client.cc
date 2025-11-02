@@ -154,16 +154,16 @@ bool NtpClient::SyncOnce(const std::string& host, uint16_t port,
   // Build request
   NtpPacket req{};
   req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);
-  double t1 = clock_->NowUnix();
+  const double t1 = clock_->NowUnix();
   req.tx_timestamp = Hton64(ToNtpTimestamp(t1));
 
   NtpPacket resp{};
   RealUdpTransport default_tp;
   INtpTransport* tp = transport_ ? transport_ : &default_tp;
-  bool ok = tp->Exchange(host, port, timeout_ms,
-                         reinterpret_cast<const uint8_t*>(&req), sizeof(req),
-                         reinterpret_cast<uint8_t*>(&resp), sizeof(resp));
-  double t4 = clock_->NowUnix();
+  const bool ok = tp->Exchange(
+      host, port, timeout_ms, reinterpret_cast<const uint8_t*>(&req),
+      sizeof(req), reinterpret_cast<uint8_t*>(&resp), sizeof(resp));
+  const double t4 = clock_->NowUnix();
   if (!ok) return false;
 
   double t1_e = FromNtpTimestamp(resp.orig_timestamp);
@@ -178,13 +178,13 @@ bool NtpClient::SyncOnce(const std::string& host, uint16_t port,
   double target = t4 + theta;
 
   // Step or slew
-  const double slew_ppm_max = 500.0;
-  double off = target - clock_->NowUnix();
+  const double off = target - clock_->NowUnix();
   if (std::abs(off) > 0.2) {
     clock_->SetAbsolute(target);
   } else {
-    // Try to remove within ~10s limited by ppm
-    double ppm = std::clamp(off * 1e6 / 10.0, -slew_ppm_max, slew_ppm_max);
+    // Try to remove within ~slew_window_sec_ limited by ppm
+    const double ppm =
+        std::clamp(off * 1e6 / slew_window_sec_, -slew_ppm_max_, slew_ppm_max_);
     clock_->SetRate(1.0 + ppm / 1e6);
   }
   return true;

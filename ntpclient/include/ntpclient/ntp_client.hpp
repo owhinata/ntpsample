@@ -14,7 +14,11 @@ class QpcClock;
 
 namespace ntpclient {
 
-/** Lightweight transport interface to allow test/server swapping. */
+/**
+ * Lightweight transport interface to allow test/server swapping.
+ *
+ * Responsibility: perform a single request/response exchange over UDP.
+ */
 class INtpTransport {
  public:
   virtual ~INtpTransport() = default;
@@ -29,6 +33,12 @@ class INtpTransport {
 
 /**
  * Minimal SNTP client that sends one request and adjusts a QpcClock.
+ *
+ * Responsibilities
+ * - Build SNTP request (client mode, VN=4) with t1 timestamp.
+ * - Use transport to exchange a single datagram and capture local t4.
+ * - Compute offset (theta) = ((t2 - t1) + (t3 - t4)) / 2.
+ * - Apply step (>|0.2|s) or slew (<=|0.2|s within ~window seconds, ppm cap).
  */
 class NtpClient {
  public:
@@ -47,10 +57,16 @@ class NtpClient {
    */
   bool SyncOnce(const std::string& host, uint16_t port = 9123,
                 int timeout_ms = 1000);
+  /** Sets maximum slew rate in ppm (default 500). */
+  void SetSlewPpmMax(double ppm) { slew_ppm_max_ = ppm; }
+  /** Sets slew window target in seconds (default 10). */
+  void SetSlewWindowSec(double sec) { slew_window_sec_ = sec; }
 
  private:
   ntpserver::QpcClock* clock_{};  // not owned
   INtpTransport* transport_{};    // not owned
+  double slew_ppm_max_{500.0};
+  double slew_window_sec_{10.0};
 };
 
 }  // namespace ntpclient
