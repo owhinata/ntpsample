@@ -42,19 +42,44 @@ struct NtpPacket {
 };
 #pragma pack(pop)
 
-inline uint64_t hton64(uint64_t v) {
+/** Returns v converted to big-endian (network) order. */
+inline uint64_t Hton64(uint64_t v) {
   uint32_t hi = htonl(static_cast<uint32_t>(v >> 32));
   uint32_t lo = htonl(static_cast<uint32_t>(v & 0xFFFFFFFFULL));
   return (static_cast<uint64_t>(lo) << 32) | hi;
 }
 
-inline uint64_t to_ntp_timestamp(double unix_seconds) {
+/** Converts UNIX seconds to 64-bit NTP timestamp (seconds.fraction). */
+inline uint64_t ToNtpTimestamp(double unix_seconds) {
   double sec;
   double frac =
       std::modf(unix_seconds + static_cast<double>(kNtpUnixEpochDiff), &sec);
   uint64_t s = static_cast<uint64_t>(sec);
   uint64_t f = static_cast<uint64_t>(frac * static_cast<double>(1ULL << 32));
   return (s << 32) | f;
+}
+
+/**
+ * Fills an NTP response packet from request and times.
+ * Responsibility: formatting header fields and timestamps only.
+ */
+inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
+                                int8_t precision, uint32_t ref_id_be,
+                                double t_ref, double t_recv, double t_tx,
+                                NtpPacket* out) {
+  out->li_vn_mode =
+      static_cast<uint8_t>((0 << 6) | (4 << 3) | 4);  // LI=0,VN=4,Mode=4
+  out->stratum = stratum;
+  out->poll = 4;
+  out->precision = precision;
+  out->root_delay = htonl(0);
+  out->root_dispersion = htonl(0);
+  out->ref_id = ref_id_be;
+
+  out->ref_timestamp = Hton64(ToNtpTimestamp(t_ref));
+  out->orig_timestamp = req.tx_timestamp;  // echo client's transmit timestamp
+  out->recv_timestamp = Hton64(ToNtpTimestamp(t_recv));
+  out->tx_timestamp = Hton64(ToNtpTimestamp(t_tx));
 }
 }  // namespace
 
@@ -65,31 +90,11 @@ class NtpServer::Impl {
 
   bool Start(uint16_t port) {
     if (running_.load()) return true;
-
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-      return false;
-    }
-    wsa_started_ = true;
-
-    sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock_ == INVALID_SOCKET) {
+    if (!InitializeWinsock()) return false;
+    if (!CreateAndBindSocket(port)) {
       CleanupWinsock();
       return false;
     }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
-    if (bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
-        SOCKET_ERROR) {
-      closesocket(sock_);
-      sock_ = INVALID_SOCKET;
-      CleanupWinsock();
-      return false;
-    }
-
     running_.store(true);
     thread_ = std::thread([this]() { Loop(); });
     return true;
@@ -116,6 +121,17 @@ class NtpServer::Impl {
   void SetRefId(uint32_t ref_be) { ref_id_be_ = ref_be; }
 
  private:
+  /** Initializes WinSock. */
+  bool InitializeWinsock() {
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+      return false;
+    }
+    wsa_started_ = true;
+    return true;
+  }
+
+  /** Releases WinSock if it was initialized. */
   void CleanupWinsock() {
     if (wsa_started_) {
       WSACleanup();
@@ -123,52 +139,68 @@ class NtpServer::Impl {
     }
   }
 
+  /** Creates UDP socket and binds to given port. */
+  bool CreateAndBindSocket(uint16_t port) {
+    sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock_ == INVALID_SOCKET) {
+      return false;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+    if (bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
+        SOCKET_ERROR) {
+      closesocket(sock_);
+      sock_ = INVALID_SOCKET;
+      return false;
+    }
+    return true;
+  }
+
+  /** Main loop: wait for datagrams and respond. */
   void Loop() {
     TimeSource* ts = time_source_ ? time_source_ : &UserTime::Instance();
 
     while (running_.load()) {
-      fd_set rfds;
-      FD_ZERO(&rfds);
-      if (sock_ == INVALID_SOCKET) break;
-      FD_SET(sock_, &rfds);
-      timeval tv{};
-      tv.tv_sec = 0;
-      tv.tv_usec = 200000;  // 200ms tick
-      int ready = select(0, &rfds, nullptr, nullptr, &tv);
-      if (!running_.load()) break;
-      if (ready <= 0) continue;  // timeout or error; continue
-
-      sockaddr_in cli{};
-      int clen = sizeof(cli);
-      NtpPacket req{};
-      int n = recvfrom(sock_, reinterpret_cast<char*>(&req), sizeof(req), 0,
-                       reinterpret_cast<sockaddr*>(&cli), &clen);
-      if (n <= 0) continue;
-
-      const double t_recv = ts->NowUnix();
-
-      NtpPacket resp{};
-      resp.li_vn_mode =
-          static_cast<uint8_t>((0 << 6) | (4 << 3) | 4);  // LI=0,VN=4,Mode=4
-      resp.stratum = stratum_;
-      resp.poll = 4;
-      resp.precision = precision_;
-      resp.root_delay = htonl(0);
-      resp.root_dispersion = htonl(0);
-      resp.ref_id = ref_id_be_;
-
-      const double t_ref = t_recv;
-      resp.ref_timestamp = hton64(to_ntp_timestamp(t_ref));
-      resp.orig_timestamp =
-          req.tx_timestamp;  // echo client's transmit timestamp
-      resp.recv_timestamp = hton64(to_ntp_timestamp(t_recv));
-
-      const double t_tx = ts->NowUnix();
-      resp.tx_timestamp = hton64(to_ntp_timestamp(t_tx));
-
-      sendto(sock_, reinterpret_cast<const char*>(&resp), sizeof(resp), 0,
-             reinterpret_cast<sockaddr*>(&cli), clen);
+      if (!WaitReadable(/*timeout_us=*/200000)) continue;
+      HandleSingleDatagram(ts);
     }
+  }
+
+  /** Waits for readability with a microsecond timeout. */
+  bool WaitReadable(int64_t timeout_us) {
+    if (sock_ == INVALID_SOCKET) return false;
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(sock_, &rfds);
+    timeval tv{};
+    tv.tv_sec = static_cast<decltype(tv.tv_sec)>(timeout_us / 1000000);
+    tv.tv_usec = static_cast<decltype(tv.tv_usec)>(timeout_us % 1000000);
+    int ready = select(0, &rfds, nullptr, nullptr, &tv);
+    return ready > 0;
+  }
+
+  /** Receives one datagram and sends a response. */
+  void HandleSingleDatagram(TimeSource* ts) {
+    sockaddr_in cli{};
+    int clen = sizeof(cli);
+    NtpPacket req{};
+    int n = recvfrom(sock_, reinterpret_cast<char*>(&req), sizeof(req), 0,
+                     reinterpret_cast<sockaddr*>(&cli), &clen);
+    if (n <= 0) return;
+
+    const double t_recv = ts->NowUnix();
+    const double t_ref = t_recv;
+    const double t_tx = ts->NowUnix();
+
+    NtpPacket resp{};
+    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, t_recv,
+                        t_tx, &resp);
+
+    sendto(sock_, reinterpret_cast<const char*>(&resp), sizeof(resp), 0,
+           reinterpret_cast<sockaddr*>(&cli), clen);
   }
 
   std::thread thread_;
