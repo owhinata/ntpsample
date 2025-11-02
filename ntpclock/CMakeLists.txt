@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(ntpclock LANGUAGES CXX)
 
 option(NTP_CLOCK_BUILD_SHARED "Build ntpclock as shared library" OFF)
-option(NTP_CLOCK_BUILD_EXAMPLE "Build ntpclock example program" OFF)
+option(NTP_CLOCK_BUILD_EXAMPLE "Build ntpclock example program" ON)
 option(NTP_CLOCK_BUILD_TESTS "Build ntpclock unit tests" ON)
 
 set(CMAKE_CXX_STANDARD 17)

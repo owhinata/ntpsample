@@ -120,7 +120,12 @@ std::ostream& operator<<(std::ostream& os, const Status& s) {
              : (s.last_correction == ntpclock::Status::Correction::Slew
                     ? "slew"
                     : "step"))
-     << ", corr_amount=" << s.last_correction_amount_s;
+     << ", corr_amount=" << s.last_correction_amount_s
+     << ", delay_s=" << s.last_delay_s << ", wcount=" << s.window_count
+     << "/ow=" << s.offset_window << "/sw=" << s.skew_window
+     << ", med=" << s.offset_median_s << ", min=" << s.offset_min_s
+     << ", max=" << s.offset_max_s << ", applied=" << s.offset_applied_s
+     << ", target=" << s.offset_target_s;
   if (!s.last_error.empty()) os << ", err='" << s.last_error << "'";
   return os;
 }
@@ -309,6 +314,7 @@ void ntpclock::ClockService::Impl::Loop() {
     Status st_local;
     st_local.last_error.clear();
     st_local.rtt_ms = sample_rtt_ms;
+    st_local.last_delay_s = sample_rtt_ms / 1000.0;
     st_local.offset_s = sample_offset_s;
     st_local.last_update_unix_s = 0.0;
     st_local.samples = 0;
@@ -333,14 +339,22 @@ void ntpclock::ClockService::Impl::Loop() {
       while (times_.size() > static_cast<size_t>(maxw))
         times_.erase(times_.begin());
 
-      // Compute robust target: median of last kOffsetWindow
+      // Compute robust target: median of last window, and min/max for debug
+      double median = sample_offset_s;
+      double omin = sample_offset_s, omax = sample_offset_s;
       {
         size_t n = offsets_.size();
         size_t win = static_cast<size_t>(std::max(1, snapshot.OffsetWindow()));
         size_t start = (n > win) ? (n - win) : 0;
         std::vector<double> tmp(offsets_.begin() + start, offsets_.end());
-        std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
-        double median = tmp[tmp.size() / 2];
+        if (!tmp.empty()) {
+          std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2,
+                           tmp.end());
+          median = tmp[tmp.size() / 2];
+          auto mm = std::minmax_element(tmp.begin(), tmp.end());
+          omin = *mm.first;
+          omax = *mm.second;
+        }
         std::lock_guard<std::mutex> lk(est_mtx);
         offset_target_s = median;
       }
@@ -395,6 +409,18 @@ void ntpclock::ClockService::Impl::Loop() {
         st_local.skew_ppm = slope * 1e6;                 // convert to ppm
       }
       st_local.samples = good_samples;
+      st_local.offset_window = snapshot.OffsetWindow();
+      st_local.skew_window = snapshot.SkewWindow();
+      st_local.window_count = static_cast<int>(offsets_.size());
+      st_local.offset_median_s = median;
+      st_local.offset_min_s = omin;
+      st_local.offset_max_s = omax;
+      st_local.offset_applied_s =
+          offset_applied_s.load(std::memory_order_relaxed);
+      {
+        std::lock_guard<std::mutex> lk(est_mtx);
+        st_local.offset_target_s = offset_target_s;
+      }
     } else {
       // Failure; keep previous applied offset, keep trying.
       st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());

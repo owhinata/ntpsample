@@ -115,6 +115,8 @@ struct Status {
 
   bool synchronized = false;
   int rtt_ms = 0;
+  /** Latest computed round-trip delay (seconds). */
+  double last_delay_s = 0.0;
   double offset_s = 0.0;
   double skew_ppm = 0.0;
   double last_update_unix_s = 0.0;
@@ -122,6 +124,16 @@ struct Status {
   Correction last_correction = Correction::None;
   double last_correction_amount_s = 0.0;
   std::string last_error;
+
+  // Debug summary of estimator windows
+  int offset_window = 0;  // configured window size
+  int skew_window = 0;    // configured window size
+  int window_count = 0;   // current sample count retained
+  double offset_median_s = 0.0;
+  double offset_min_s = 0.0;
+  double offset_max_s = 0.0;
+  double offset_applied_s = 0.0;
+  double offset_target_s = 0.0;
 
   /** Stream formatter for logging. */
   friend std::ostream& operator<<(std::ostream& os, const Status& s);
