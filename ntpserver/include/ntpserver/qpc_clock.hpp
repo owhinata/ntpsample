@@ -13,11 +13,11 @@
 
 namespace ntpserver {
 
-/** UserTime implementation backed by QueryPerformanceCounter. */
-class UserTime : public TimeSource {
+/** QpcClock implementation backed by QueryPerformanceCounter. */
+class QpcClock : public TimeSource {
  public:
-  UserTime();
-  ~UserTime() override = default;
+  QpcClock();
+  ~QpcClock() override = default;
 
   /** Returns current time as UNIX seconds. */
   double NowUnix() override;
@@ -31,7 +31,7 @@ class UserTime : public TimeSource {
   void SetAbsolute(double unix_sec);
 
   /** Singleton accessor for convenience. */
-  static UserTime& Instance();
+  static QpcClock& Instance();
 
  private:
   /** Seconds elapsed since construction measured via QPC. */

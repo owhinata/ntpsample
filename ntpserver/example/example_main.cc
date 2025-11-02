@@ -5,12 +5,12 @@
 #include <thread>
 
 #include "ntpserver/ntp_server.hpp"
-#include "ntpserver/user_time.hpp"
+#include "ntpserver/qpc_clock.hpp"
 
 int main() {
   ntpserver::NtpServer server;
   // Optional: tweak local time source
-  auto& ut = ntpserver::UserTime::Instance();
+  auto& ut = ntpserver::QpcClock::Instance();
   ut.SetRate(1.0);
   ut.AdjustOffset(0.0);
   server.SetTimeSource(&ut);

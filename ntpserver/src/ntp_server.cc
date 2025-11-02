@@ -18,7 +18,7 @@
 #include <mutex>
 #include <thread>
 
-#include "ntpserver/user_time.hpp"
+#include "ntpserver/qpc_clock.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -164,7 +164,7 @@ class NtpServer::Impl {
 
   /** Main loop: wait for datagrams and respond. */
   void Loop() {
-    TimeSource* ts = time_source_ ? time_source_ : &UserTime::Instance();
+    TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
 
     while (running_.load()) {
       if (!WaitReadable(/*timeout_us=*/200000)) continue;

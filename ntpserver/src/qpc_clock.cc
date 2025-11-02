@@ -1,9 +1,9 @@
 // Copyright (c) 2025 <Your Name>
 /**
- * @file user_time.cc
- * @brief Windows-specific implementation of UserTime using QPC.
+ * @file qpc_clock.cc
+ * @brief Windows-specific implementation of QpcClock using QPC.
  */
-#include "ntpserver/user_time.hpp"
+#include "ntpserver/qpc_clock.hpp"
 
 #include <windows.h>
 
@@ -11,7 +11,7 @@
 
 namespace ntpserver {
 
-UserTime::UserTime() {
+QpcClock::QpcClock() {
   LARGE_INTEGER f{};
   QueryPerformanceFrequency(&f);
   qpc_freq_ = static_cast<double>(f.QuadPart);
@@ -25,30 +25,30 @@ UserTime::UserTime() {
   offset_ = 0.0;
 }
 
-double UserTime::CurrentUnix() {
+double QpcClock::CurrentUnix() {
   return std::chrono::duration<double>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
 }
 
-double UserTime::Elapsed() const {
+double QpcClock::Elapsed() const {
   LARGE_INTEGER t{};
   QueryPerformanceCounter(&t);
   return (static_cast<int64_t>(t.QuadPart) - qpc_t0_) / qpc_freq_;
 }
 
-double UserTime::NowUnix() { return start_unix_ + rate_ * Elapsed() + offset_; }
+double QpcClock::NowUnix() { return start_unix_ + rate_ * Elapsed() + offset_; }
 
-void UserTime::SetRate(double rate) { rate_ = rate; }
+void QpcClock::SetRate(double rate) { rate_ = rate; }
 
-void UserTime::AdjustOffset(double delta) { offset_ += delta; }
+void QpcClock::AdjustOffset(double delta) { offset_ += delta; }
 
-void UserTime::SetAbsolute(double unix_sec) {
+void QpcClock::SetAbsolute(double unix_sec) {
   offset_ = unix_sec - (start_unix_ + rate_ * Elapsed());
 }
 
-UserTime& UserTime::Instance() {
-  static UserTime ut;
+QpcClock& QpcClock::Instance() {
+  static QpcClock ut;
   return ut;
 }
 
