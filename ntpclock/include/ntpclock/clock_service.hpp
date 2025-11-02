@@ -48,6 +48,10 @@ class Options {
     Builder& MaxRttMs(int v);
     /** Set minimum samples to report synchronized (default: 3). */
     Builder& MinSamplesToLock(int v);
+    /** Number of recent offsets for median target (default: 5). */
+    Builder& OffsetWindow(int v);
+    /** Number of samples for skew OLS window (default: 20). */
+    Builder& SkewWindow(int v);
     /** Set local time source (default: QpcClock::Instance()). */
     Builder& TimeSource(ntpserver::TimeSource* ts);
 
@@ -59,6 +63,8 @@ class Options {
     double slew_rate_ms_per_s_;
     int max_rtt_ms_;
     int min_samples_to_lock_;
+    int offset_window_;
+    int skew_window_;
     ntpserver::TimeSource* time_source_;
   };
 
@@ -69,6 +75,8 @@ class Options {
   double SlewRateMsPerSec() const { return slew_rate_ms_per_s_; }
   int MaxRttMs() const { return max_rtt_ms_; }
   int MinSamplesToLock() const { return min_samples_to_lock_; }
+  int OffsetWindow() const { return offset_window_; }
+  int SkewWindow() const { return skew_window_; }
   ntpserver::TimeSource* TimeSourcePtr() const { return time_source_; }
   ///@}
 
@@ -78,12 +86,15 @@ class Options {
  private:
   // Private ctor for Builder
   Options(int poll_ms, int step_ms, double slew_ms_per_s, int max_rtt_ms,
-          int min_samples, ntpserver::TimeSource* ts)
+          int min_samples, int offset_window, int skew_window,
+          ntpserver::TimeSource* ts)
       : poll_interval_ms_(poll_ms),
         step_threshold_ms_(step_ms),
         slew_rate_ms_per_s_(slew_ms_per_s),
         max_rtt_ms_(max_rtt_ms),
         min_samples_to_lock_(min_samples),
+        offset_window_(offset_window),
+        skew_window_(skew_window),
         time_source_(ts) {}
 
   int poll_interval_ms_;
@@ -91,6 +102,8 @@ class Options {
   double slew_rate_ms_per_s_;
   int max_rtt_ms_;
   int min_samples_to_lock_;
+  int offset_window_;
+  int skew_window_;
   ntpserver::TimeSource* time_source_;
 };
 

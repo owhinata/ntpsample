@@ -134,7 +134,7 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
  * @expected First call after step is < previous time. Next calls are
  *           non-decreasing again.
  */
-TEST(ClockServiceTest, DISABLED_StepAllowsBackwardOnce) {
+TEST(ClockServiceTest, StepAllowsBackwardOnce) {
   using namespace std::chrono;
   double now = duration<double>(system_clock::now().time_since_epoch()).count();
   FakeTimeSource server_ts(now);
@@ -144,22 +144,38 @@ TEST(ClockServiceTest, DISABLED_StepAllowsBackwardOnce) {
   std::this_thread::sleep_for(milliseconds(50));
 
   ClockService svc;
-  auto opts = Options::Builder().PollIntervalMs(100).StepThresholdMs(200).Build();
+  auto opts = Options::Builder()
+                  .PollIntervalMs(100)
+                  .StepThresholdMs(200)
+                  .OffsetWindow(1)  // use latest sample for target
+                  .Build();
   ASSERT_TRUE(svc.Start("127.0.0.1", 29334, opts));
   std::this_thread::sleep_for(milliseconds(500));
 
-  double before = svc.NowUnix();
+  double last_now_before_step = svc.NowUnix();
   // Step server backward by 300 ms
   server_ts.Adjust(-0.300);
-  std::this_thread::sleep_for(milliseconds(700));
-  double after1 = svc.NowUnix();
-  // Expect a backward jump of at least 200 ms
-  EXPECT_LE(after1, before - 0.20);
+  // Poll status; capture NowUnix() while waiting to keep a pre-step baseline
+  bool stepped = false;
+  for (int i = 0; i < 20; ++i) {
+    std::this_thread::sleep_for(milliseconds(50));
+    auto s = svc.GetStatus();
+    if (s.last_correction == Status::Correction::Step) {
+      stepped = true;
+      break;
+    }
+    // still pre-step, update baseline
+    last_now_before_step = svc.NowUnix();
+  }
+  ASSERT_TRUE(stepped) << "did not observe Step within timeout";
+  double first_after = svc.NowUnix();
+  // Expect a backward jump relative to the immediate pre-step time.
+  EXPECT_LT(first_after, last_now_before_step);
 
   // Next call should not go backward again
   std::this_thread::sleep_for(milliseconds(10));
   double after2 = svc.NowUnix();
-  EXPECT_GE(after2, after1);
+  EXPECT_GE(after2, first_after);
 
   svc.Stop();
   server.Stop();

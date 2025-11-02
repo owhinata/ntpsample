@@ -38,6 +38,8 @@ ntpclock::Options::Builder::Builder()
       slew_rate_ms_per_s_(5.0),
       max_rtt_ms_(100),
       min_samples_to_lock_(3),
+      offset_window_(5),
+      skew_window_(20),
       time_source_(nullptr) {}
 
 ntpclock::Options::Builder::Builder(const Options& base)
@@ -75,6 +77,16 @@ ntpclock::Options::Builder& ntpclock::Options::Builder::MinSamplesToLock(
   return *this;
 }
 
+ntpclock::Options::Builder& ntpclock::Options::Builder::OffsetWindow(int v) {
+  offset_window_ = std::max(1, v);
+  return *this;
+}
+
+ntpclock::Options::Builder& ntpclock::Options::Builder::SkewWindow(int v) {
+  skew_window_ = std::max(1, v);
+  return *this;
+}
+
 ntpclock::Options::Builder& ntpclock::Options::Builder::TimeSource(
     ntpserver::TimeSource* ts) {
   time_source_ = ts;
@@ -82,9 +94,9 @@ ntpclock::Options::Builder& ntpclock::Options::Builder::TimeSource(
 }
 
 ntpclock::Options ntpclock::Options::Builder::Build() const {
-  return ntpclock::Options(poll_interval_ms_, step_threshold_ms_,
-                           slew_rate_ms_per_s_, max_rtt_ms_,
-                           min_samples_to_lock_, time_source_);
+  return ntpclock::Options(
+      poll_interval_ms_, step_threshold_ms_, slew_rate_ms_per_s_, max_rtt_ms_,
+      min_samples_to_lock_, offset_window_, skew_window_, time_source_);
 }
 
 namespace ntpclock {
@@ -144,8 +156,6 @@ struct ntpclock::ClockService::Impl {
   void Loop();
 
   // Simple estimators/storage
-  static constexpr size_t kOffsetWindow = 5;
-  static constexpr size_t kSkewWindow = 20;
   std::vector<double> offsets_;
   std::vector<double> times_;
 };
@@ -316,13 +326,18 @@ void ntpclock::ClockService::Impl::Loop() {
       // Keep sliding windows
       offsets_.push_back(sample_offset_s);
       times_.push_back(tnow);
-      if (offsets_.size() > kSkewWindow) offsets_.erase(offsets_.begin());
-      if (times_.size() > kSkewWindow) times_.erase(times_.begin());
+      int maxw = std::max(snapshot.OffsetWindow(), snapshot.SkewWindow());
+      if (maxw < 1) maxw = 1;
+      while (offsets_.size() > static_cast<size_t>(maxw))
+        offsets_.erase(offsets_.begin());
+      while (times_.size() > static_cast<size_t>(maxw))
+        times_.erase(times_.begin());
 
       // Compute robust target: median of last kOffsetWindow
       {
         size_t n = offsets_.size();
-        size_t start = (n > kOffsetWindow) ? (n - kOffsetWindow) : 0;
+        size_t win = static_cast<size_t>(std::max(1, snapshot.OffsetWindow()));
+        size_t start = (n > win) ? (n - win) : 0;
         std::vector<double> tmp(offsets_.begin() + start, offsets_.end());
         std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
         double median = tmp[tmp.size() / 2];
@@ -359,7 +374,9 @@ void ntpclock::ClockService::Impl::Loop() {
       st_local.last_update_unix_s = tnow;
       // Estimate skew (ppm) via simple OLS slope of offset over time
       if (times_.size() >= 2) {
-        size_t n = std::min(times_.size(), kSkewWindow);
+        size_t n =
+            std::min(times_.size(),
+                     static_cast<size_t>(std::max(1, snapshot.SkewWindow())));
         double mean_t = 0.0, mean_o = 0.0;
         for (size_t i = times_.size() - n; i < times_.size(); ++i) {
           mean_t += times_[i];
