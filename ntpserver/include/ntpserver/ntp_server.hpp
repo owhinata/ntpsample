@@ -6,20 +6,9 @@
 #include <string>
 
 #include "ntpserver/export.hpp"
+#include "ntpserver/time_source.hpp"
 
 namespace ntpserver {
-
-/**
- * Interface for time sources.
- *
- * Provides current time as UNIX seconds (UTC, since 1970-01-01T00:00:00Z).
- */
-class TimeSource {
- public:
-  virtual ~TimeSource() = default;
-  /** Returns the current time in seconds since the UNIX epoch. */
-  virtual double NowUnix() = 0;
-};
 
 /**
  * Minimal NTPv4 server (UDP/IPv4).

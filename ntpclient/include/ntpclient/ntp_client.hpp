@@ -8,9 +8,9 @@
 #include <cstdint>
 #include <string>
 
-namespace ntpserver {
-class QpcClock;
-}
+#include "ntpserver/time_source.hpp"
+
+// QpcClock forward-declare not needed due to include above
 
 namespace ntpclient {
 
@@ -25,8 +25,11 @@ namespace ntpclient {
  */
 class NtpClient {
  public:
-  /** Constructs a client with the given adjustable clock. */
-  explicit NtpClient(ntpserver::QpcClock* clock);
+  /** Default-construct with the library's default clock implementation. */
+  NtpClient();
+
+  /** Construct with an injected time source (also used for adjustments). */
+  explicit NtpClient(ntpserver::TimeSource* time_source);
 
   /**
    * Send one SNTP request to host:port and apply step/slew.
@@ -43,7 +46,7 @@ class NtpClient {
   void SetSlewWindowSec(double sec) { slew_window_sec_ = sec; }
 
  private:
-  ntpserver::QpcClock* clock_{};  // not owned
+  ntpserver::TimeSource* time_source_{};  // not owned (also adjusted)
   double slew_ppm_max_{500.0};
   double slew_window_sec_{10.0};
 };

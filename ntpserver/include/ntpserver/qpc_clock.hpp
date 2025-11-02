@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-#include "ntpserver/ntp_server.hpp"
+#include "ntpserver/time_source.hpp"
 
 namespace ntpserver {
 
@@ -24,11 +24,11 @@ class QpcClock : public TimeSource {
 
   // Adjustments
   /** Sets progression rate (default 1.0). */
-  void SetRate(double rate);
+  void SetRate(double rate) override;
   /** Adds a relative offset in seconds to the current time. */
   void AdjustOffset(double delta);
   /** Sets absolute time in UNIX seconds. */
-  void SetAbsolute(double unix_sec);
+  void SetAbsolute(double unix_sec) override;
 
   /** Singleton accessor for convenience. */
   static QpcClock& Instance();
