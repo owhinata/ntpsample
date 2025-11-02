@@ -98,16 +98,24 @@ class RealUdpTransport : public INtpTransport {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    // Try numeric first, then resolve via getaddrinfo (IPv4 only).
     if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-      hostent* he = gethostbyname(host.c_str());
-      if (!he || he->h_addrtype != AF_INET) {
+      addrinfo hints{};
+      hints.ai_family = AF_INET;
+      hints.ai_socktype = SOCK_DGRAM;
+      hints.ai_protocol = IPPROTO_UDP;
+      addrinfo* res = nullptr;
+      if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 ||
+          res == nullptr) {
         closesocket(s);
         WSACleanup();
         return false;
       }
-      std::memcpy(&addr.sin_addr, he->h_addr_list[0], sizeof(in_addr));
+      auto* sin = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+      addr.sin_addr = sin->sin_addr;
+      freeaddrinfo(res);
     }
-    addr.sin_port = htons(port);
 
     int sent =
         sendto(s, reinterpret_cast<const char*>(req), static_cast<int>(req_len),
