@@ -14,6 +14,19 @@ class QpcClock;
 
 namespace ntpclient {
 
+/** Lightweight transport interface to allow test/server swapping. */
+class INtpTransport {
+ public:
+  virtual ~INtpTransport() = default;
+  /**
+   * Sends request and receives response from host:port with timeout.
+   * @return true if exactly resp_len bytes were received.
+   */
+  virtual bool Exchange(const std::string& host, uint16_t port, int timeout_ms,
+                        const uint8_t* req, size_t req_len, uint8_t* resp,
+                        size_t resp_len) = 0;
+};
+
 /**
  * Minimal SNTP client that sends one request and adjusts a QpcClock.
  */
@@ -21,6 +34,9 @@ class NtpClient {
  public:
   /** Constructs a client with the given adjustable clock. */
   explicit NtpClient(ntpserver::QpcClock* clock);
+
+  /** Constructs a client with injected transport (for testing). */
+  NtpClient(ntpserver::QpcClock* clock, INtpTransport* transport);
 
   /**
    * Send one SNTP request to host:port and apply step/slew.
@@ -34,6 +50,7 @@ class NtpClient {
 
  private:
   ntpserver::QpcClock* clock_{};  // not owned
+  INtpTransport* transport_{};    // not owned
 };
 
 }  // namespace ntpclient

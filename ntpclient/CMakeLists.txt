@@ -4,6 +4,7 @@ project(ntpclient LANGUAGES CXX)
 
 option(NTP_CLIENT_BUILD_SHARED "Build ntpclient as shared library" OFF)
 option(NTP_CLIENT_BUILD_EXAMPLE "Build ntpclient example program" ON)
+option(NTP_CLIENT_BUILD_TESTS "Build ntpclient unit tests" ON)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +41,7 @@ endif()
 
 # Formatting and lint
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/ClangFormat.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/Cpplint.cmake)
 set(_fmt)
 foreach(f IN LISTS NTPC_SOURCES NTPC_HEADERS)
   if(NOT IS_ABSOLUTE "${f}")
@@ -51,8 +53,25 @@ endforeach()
 if(NTP_CLIENT_BUILD_EXAMPLE)
   list(APPEND _fmt "${CMAKE_CURRENT_SOURCE_DIR}/example/example_main.cc")
 endif()
-ntp_add_clang_format(ntpclient ${_fmt})
 
-include(${CMAKE_CURRENT_LIST_DIR}/../cmake/Cpplint.cmake)
+# Tests
+if(NTP_CLIENT_BUILD_TESTS)
+  include(${CMAKE_CURRENT_LIST_DIR}/../cmake/FetchGTest.cmake)
+  ntp_fetch_gtest(TAG v1.14.0)
+  enable_testing()
+  add_executable(ntpclient_tests tests/ntp_client_test.cc)
+  target_include_directories(ntpclient_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ntpserver/include)
+  target_link_libraries(ntpclient_tests PRIVATE ntpclient gtest gtest_main ws2_32)
+  if(MSVC)
+    target_compile_options(ntpclient_tests PRIVATE /W4 /permissive-)
+    target_compile_definitions(ntpclient_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  endif()
+  add_test(NAME ntpclient_tests COMMAND ntpclient_tests)
+  # include tests in formatting/lint
+  list(APPEND _fmt "${CMAKE_CURRENT_SOURCE_DIR}/tests/ntp_client_test.cc")
+endif()
+
+# finalize format/lint targets once
 set(_lint ${_fmt})
+ntp_add_clang_format(ntpclient ${_fmt})
 ntp_add_cpplint(ntpclient ${_lint})
