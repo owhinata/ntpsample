@@ -12,7 +12,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/ntpserver/*.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/ntpserver/**/*.hpp"
 )
 
 set(NTPSERVER_SOURCES
@@ -50,55 +49,32 @@ endif()
 # ----------------------------------------------------------------------------
 # clang-format (auto-run before build if available)
 # ----------------------------------------------------------------------------
-find_program(CLANG_FORMAT NAMES clang-format)
-if(CLANG_FORMAT)
-    # Build absolute file list for formatting
-    set(NTPSERVER_SOURCES_ABS)
-    foreach(f IN LISTS NTPSERVER_SOURCES)
-        if(NOT IS_ABSOLUTE "${f}")
-            list(APPEND NTPSERVER_SOURCES_ABS "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
-        else()
-            list(APPEND NTPSERVER_SOURCES_ABS "${f}")
-        endif()
-    endforeach()
-
-    set(CLANG_FORMAT_FILES ${NTPSERVER_SOURCES_ABS} ${NTPSERVER_HEADERS})
-    if(NTP_SERVER_BUILD_EXAMPLE)
-        list(APPEND CLANG_FORMAT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/example/example_main.cc")
-    endif()
-    if(NTP_SERVER_BUILD_TESTS)
-        file(GLOB TEST_FORMAT_FILES CONFIGURE_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cc"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp")
-        list(APPEND CLANG_FORMAT_FILES ${TEST_FORMAT_FILES})
-    endif()
-
-    add_custom_target(ntpserver_clang_format ALL
-        COMMAND ${CLANG_FORMAT} -i -style=file ${CLANG_FORMAT_FILES}
-        COMMENT "Running clang-format on ntpserver sources")
-
-    add_dependencies(ntpserver ntpserver_clang_format)
-    if(TARGET ntpserver_example)
-        add_dependencies(ntpserver_example ntpserver_clang_format)
-    endif()
-else()
-    message(STATUS "clang-format not found; skipping source formatting")
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/ClangFormat.cmake)
+set(_fmt_files)
+foreach(f IN LISTS NTPSERVER_SOURCES NTPSERVER_HEADERS)
+  if(NOT IS_ABSOLUTE "${f}")
+    list(APPEND _fmt_files "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
+  else()
+    list(APPEND _fmt_files "${f}")
+  endif()
+endforeach()
+if(NTP_SERVER_BUILD_EXAMPLE)
+  list(APPEND _fmt_files "${CMAKE_CURRENT_SOURCE_DIR}/example/example_main.cc")
 endif()
+if(NTP_SERVER_BUILD_TESTS)
+  file(GLOB _test_fmt_files CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp")
+  list(APPEND _fmt_files ${_test_fmt_files})
+endif()
+ntp_add_clang_format(ntpserver ${_fmt_files})
 
 # ----------------------------------------------------------------------------
 # Tests (GoogleTest via FetchContent)
 # ----------------------------------------------------------------------------
 if(NTP_SERVER_BUILD_TESTS)
-    include(FetchContent)
-    # Clone googletest from GitHub
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.14.0
-    )
-    # For MSVC multi-config generators, prevent install rules
-    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    include(${CMAKE_CURRENT_LIST_DIR}/../cmake/FetchGTest.cmake)
+    ntp_fetch_gtest(TAG v1.14.0)
 
     enable_testing()
     add_executable(ntpserver_tests
@@ -116,35 +92,19 @@ endif()
 # ----------------------------------------------------------------------------
 # cpplint (run at build if available)
 # ----------------------------------------------------------------------------
-find_program(CPPLINT NAMES cpplint)
-if(CPPLINT)
-    set(LINT_FILES ${NTPSERVER_SOURCES} ${NTPSERVER_HEADERS})
-    if(NTP_SERVER_BUILD_EXAMPLE)
-        list(APPEND LINT_FILES example/example_main.cc)
-    endif()
-    if(NTP_SERVER_BUILD_TESTS)
-        list(APPEND LINT_FILES tests/ntp_server_test.cc)
-    endif()
-
-    # Make file paths absolute for robustness
-    set(LINT_FILES_ABS)
-    foreach(f IN LISTS LINT_FILES)
-        if(NOT IS_ABSOLUTE "${f}")
-            list(APPEND LINT_FILES_ABS "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
-        else()
-            list(APPEND LINT_FILES_ABS "${f}")
-        endif()
-    endforeach()
-
-    add_custom_target(ntpserver_cpplint ALL
-        COMMAND ${CPPLINT} --filter=-build/c++11 ${LINT_FILES_ABS}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Running cpplint on ntpserver sources")
-
-    add_dependencies(ntpserver ntpserver_cpplint)
-    if(TARGET ntpserver_example)
-        add_dependencies(ntpserver_example ntpserver_cpplint)
-    endif()
-else()
-    message(STATUS "cpplint not found; skipping lint")
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/Cpplint.cmake)
+set(_lint_files)
+foreach(f IN LISTS NTPSERVER_SOURCES NTPSERVER_HEADERS)
+  if(NOT IS_ABSOLUTE "${f}")
+    list(APPEND _lint_files "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
+  else()
+    list(APPEND _lint_files "${f}")
+  endif()
+endforeach()
+if(NTP_SERVER_BUILD_EXAMPLE)
+  list(APPEND _lint_files "${CMAKE_CURRENT_SOURCE_DIR}/example/example_main.cc")
 endif()
+if(NTP_SERVER_BUILD_TESTS)
+  list(APPEND _lint_files "${CMAKE_CURRENT_SOURCE_DIR}/tests/ntp_server_test.cc")
+endif()
+ntp_add_cpplint(ntpserver ${_lint_files})
