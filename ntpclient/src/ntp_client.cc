@@ -139,49 +139,62 @@ static bool UdpExchange(const std::string& host, uint16_t port, int timeout_ms,
 }
 }  // namespace
 
-NtpClient::NtpClient() : time_source_(&ntpserver::QpcClock::Instance()) {}
+class NtpClient::Impl {
+ public:
+  explicit Impl(ntpserver::TimeSource* ts)
+      : time_source(ts ? ts : &ntpserver::QpcClock::Instance()) {}
+
+  bool SyncOnce(const std::string& host, uint16_t port, int timeout_ms) {
+    if (!time_source) return false;
+    NtpPacket req{};
+    req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);
+    const double t1 = time_source->NowUnix();
+    req.tx_timestamp = Hton64(ToNtpTimestamp(t1));
+
+    NtpPacket resp{};
+    const bool ok = UdpExchange(
+        host, port, timeout_ms, reinterpret_cast<const uint8_t*>(&req),
+        sizeof(req), reinterpret_cast<uint8_t*>(&resp), sizeof(resp));
+    const double t4 = time_source->NowUnix();
+    if (!ok) return false;
+
+    // Parse server timestamps
+    const double t2 = FromNtpTimestamp(resp.recv_timestamp);
+    const double t3 = FromNtpTimestamp(resp.tx_timestamp);
+    const double theta = ((t2 - t1) + (t3 - t4)) / 2.0;
+    const double target = t4 + theta;
+    const double off = target - time_source->NowUnix();
+    if (std::abs(off) > 0.2) {
+      time_source->SetAbsolute(target);
+    } else {
+      const double ppm =
+          std::clamp(off * 1e6 / slew_window_sec, -slew_ppm_max, slew_ppm_max);
+      time_source->SetRate(1.0 + ppm / 1e6);
+    }
+    return true;
+  }
+
+  ntpserver::TimeSource* time_source;  // not owned
+  double slew_ppm_max{500.0};
+  double slew_window_sec{10.0};
+
+  void SetSlewPpmMax(double ppm) { slew_ppm_max = ppm; }
+  void SetSlewWindowSec(double sec) { slew_window_sec = sec; }
+};
+
+NtpClient::NtpClient()
+    : impl_(std::make_unique<Impl>(&ntpserver::QpcClock::Instance())) {}
 NtpClient::NtpClient(ntpserver::TimeSource* time_source)
-    : time_source_(time_source) {}
+    : impl_(std::make_unique<Impl>(time_source)) {}
+
+NtpClient::~NtpClient() = default;
 
 bool NtpClient::SyncOnce(const std::string& host, uint16_t port,
                          int timeout_ms) {
-  if (!time_source_) return false;
-
-  // Build request
-  NtpPacket req{};
-  req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);
-  const double t1 = time_source_->NowUnix();
-  req.tx_timestamp = Hton64(ToNtpTimestamp(t1));
-
-  NtpPacket resp{};
-  const bool ok = UdpExchange(
-      host, port, timeout_ms, reinterpret_cast<const uint8_t*>(&req),
-      sizeof(req), reinterpret_cast<uint8_t*>(&resp), sizeof(resp));
-  const double t4 = time_source_->NowUnix();
-  if (!ok) return false;
-
-  double t1_e = FromNtpTimestamp(resp.orig_timestamp);
-  double t2 = FromNtpTimestamp(resp.recv_timestamp);
-  double t3 = FromNtpTimestamp(resp.tx_timestamp);
-
-  // Basic check: t1 echoed back
-  (void)t1_e;
-
-  // Offset theta and target time at local receive instant (t4)
-  double theta = ((t2 - t1) + (t3 - t4)) / 2.0;
-  double target = t4 + theta;
-
-  // Step or slew
-  const double off = target - time_source_->NowUnix();
-  if (std::abs(off) > 0.2) {
-    time_source_->SetAbsolute(target);
-  } else {
-    // Try to remove within ~slew_window_sec_ limited by ppm
-    const double ppm =
-        std::clamp(off * 1e6 / slew_window_sec_, -slew_ppm_max_, slew_ppm_max_);
-    time_source_->SetRate(1.0 + ppm / 1e6);
-  }
-  return true;
+  return impl_->SyncOnce(host, port, timeout_ms);
 }
+
+void NtpClient::SetSlewPpmMax(double ppm) { impl_->SetSlewPpmMax(ppm); }
+void NtpClient::SetSlewWindowSec(double sec) { impl_->SetSlewWindowSec(sec); }
 
 }  // namespace ntpclient

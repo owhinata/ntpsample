@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "ntpserver/time_source.hpp"
@@ -38,17 +39,18 @@ class NtpClient {
    * @param timeout_ms receive timeout
    * @return true on success
    */
+  ~NtpClient();
+
   bool SyncOnce(const std::string& host, uint16_t port = 9123,
                 int timeout_ms = 1000);
   /** Sets maximum slew rate in ppm (default 500). */
-  void SetSlewPpmMax(double ppm) { slew_ppm_max_ = ppm; }
+  void SetSlewPpmMax(double ppm);
   /** Sets slew window target in seconds (default 10). */
-  void SetSlewWindowSec(double sec) { slew_window_sec_ = sec; }
+  void SetSlewWindowSec(double sec);
 
  private:
-  ntpserver::TimeSource* time_source_{};  // not owned (also adjusted)
-  double slew_ppm_max_{500.0};
-  double slew_window_sec_{10.0};
+  class Impl;  // defined in .cc
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace ntpclient
