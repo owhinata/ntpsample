@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(ntpserver VERSION 0.1.0 LANGUAGES CXX)
 
 option(NTP_SERVER_BUILD_SHARED "Build ntpserver as shared library" OFF)
-option(NTP_SERVER_BUILD_EXAMPLE "Build example server program" OFF)
+option(NTP_SERVER_BUILD_EXAMPLE "Build example server program" ON)
 option(NTP_SERVER_BUILD_TESTS "Build unit tests with GoogleTest" ON)
 
 set(CMAKE_CXX_STANDARD 17)

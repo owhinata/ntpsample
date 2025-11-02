@@ -20,3 +20,6 @@ CMakeUserPresets.json
 
 # Local build directory
 build/
+
+# Editor swap files
+*.swp
