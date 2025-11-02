@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 
 #include "ntpserver/user_time.hpp"
@@ -89,6 +90,7 @@ class NtpServer::Impl {
   ~Impl() { Stop(); }
 
   bool Start(uint16_t port) {
+    std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (running_.load()) return true;
     if (!InitializeWinsock()) return false;
     if (!CreateAndBindSocket(port)) {
@@ -101,6 +103,7 @@ class NtpServer::Impl {
   }
 
   void Stop() {
+    std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (!running_.exchange(false)) return;
 
     if (thread_.joinable()) {
@@ -207,6 +210,7 @@ class NtpServer::Impl {
   std::atomic<bool> running_{false};
   SOCKET sock_{INVALID_SOCKET};
   bool wsa_started_{false};
+  std::mutex start_stop_mtx_;
 
   TimeSource* time_source_{nullptr};
   uint8_t stratum_{1};
