@@ -55,6 +55,11 @@ class FakeTimeSource : public TimeSource {
  public:
   explicit FakeTimeSource(double t) : value_(t) {}
   double NowUnix() override { return value_.load(); }
+  void SetAbsolute(double unix_sec) override { value_.store(unix_sec); }
+  void SetRate(double rate) override {
+    // No-op for tests; could emulate rate if needed.
+    (void)rate;
+  }
   void Set(double t) { value_.store(t); }
 
  private:
