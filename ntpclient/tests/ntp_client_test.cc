@@ -6,6 +6,7 @@
 #include "ntpclient/ntp_client.hpp"
 
 #include <gtest/gtest.h>
+#include <winsock2.h>
 
 #include <string>
 

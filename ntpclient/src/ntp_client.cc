@@ -82,70 +82,63 @@ inline void WriteTimestamp(double unix_seconds, uint8_t* dst8) {
 }  // namespace
 
 namespace {
-class RealUdpTransport : public INtpTransport {
- public:
-  bool Exchange(const std::string& host, uint16_t port, int timeout_ms,
-                const uint8_t* req, size_t req_len, uint8_t* resp,
-                size_t resp_len) override {
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+static bool UdpExchange(const std::string& host, uint16_t port, int timeout_ms,
+                        const uint8_t* req, size_t req_len, uint8_t* resp,
+                        size_t resp_len) {
+  WSADATA wsa{};
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
 
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) {
-      WSACleanup();
-      return false;
-    }
+  SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (s == INVALID_SOCKET) {
+    WSACleanup();
+    return false;
+  }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    // Try numeric first, then resolve via getaddrinfo (IPv4 only).
-    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-      addrinfo hints{};
-      hints.ai_family = AF_INET;
-      hints.ai_socktype = SOCK_DGRAM;
-      hints.ai_protocol = IPPROTO_UDP;
-      addrinfo* res = nullptr;
-      if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 ||
-          res == nullptr) {
-        closesocket(s);
-        WSACleanup();
-        return false;
-      }
-      auto* sin = reinterpret_cast<sockaddr_in*>(res->ai_addr);
-      addr.sin_addr = sin->sin_addr;
-      freeaddrinfo(res);
-    }
-
-    int sent =
-        sendto(s, reinterpret_cast<const char*>(req), static_cast<int>(req_len),
-               0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    if (sent != static_cast<int>(req_len)) {
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  // Try numeric first, then resolve via getaddrinfo (IPv4 only).
+  if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 ||
+        res == nullptr) {
       closesocket(s);
       WSACleanup();
       return false;
     }
+    auto* sin = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+    addr.sin_addr = sin->sin_addr;
+    freeaddrinfo(res);
+  }
 
-    DWORD tv = static_cast<DWORD>(timeout_ms);
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv),
-               sizeof(tv));
-
-    sockaddr_in from{};
-    int fromlen = sizeof(from);
-    int n =
-        recvfrom(s, reinterpret_cast<char*>(resp), static_cast<int>(resp_len),
-                 0, reinterpret_cast<sockaddr*>(&from), &fromlen);
+  int sent =
+      sendto(s, reinterpret_cast<const char*>(req), static_cast<int>(req_len),
+             0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  if (sent != static_cast<int>(req_len)) {
     closesocket(s);
     WSACleanup();
-    return n == static_cast<int>(resp_len);
+    return false;
   }
-};
+
+  DWORD tv = static_cast<DWORD>(timeout_ms);
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv),
+             sizeof(tv));
+
+  sockaddr_in from{};
+  int fromlen = sizeof(from);
+  int n = recvfrom(s, reinterpret_cast<char*>(resp), static_cast<int>(resp_len),
+                   0, reinterpret_cast<sockaddr*>(&from), &fromlen);
+  closesocket(s);
+  WSACleanup();
+  return n == static_cast<int>(resp_len);
+}
 }  // namespace
 
-NtpClient::NtpClient(ntpserver::QpcClock* clock)
-    : clock_(clock), transport_(nullptr) {}
-NtpClient::NtpClient(ntpserver::QpcClock* clock, INtpTransport* transport)
-    : clock_(clock), transport_(transport) {}
+NtpClient::NtpClient(ntpserver::QpcClock* clock) : clock_(clock) {}
 
 bool NtpClient::SyncOnce(const std::string& host, uint16_t port,
                          int timeout_ms) {
@@ -158,9 +151,7 @@ bool NtpClient::SyncOnce(const std::string& host, uint16_t port,
   req.tx_timestamp = Hton64(ToNtpTimestamp(t1));
 
   NtpPacket resp{};
-  RealUdpTransport default_tp;
-  INtpTransport* tp = transport_ ? transport_ : &default_tp;
-  const bool ok = tp->Exchange(
+  const bool ok = UdpExchange(
       host, port, timeout_ms, reinterpret_cast<const uint8_t*>(&req),
       sizeof(req), reinterpret_cast<uint8_t*>(&resp), sizeof(resp));
   const double t4 = clock_->NowUnix();

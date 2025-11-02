@@ -24,7 +24,9 @@ else()
 endif()
 
 target_include_directories(ntpclient PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(ntpclient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ntpserver/include)
+target_include_directories(ntpclient PRIVATE 
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../ntpserver/include)
 
 if(MSVC)
   target_compile_options(ntpclient PRIVATE /W4 /permissive-)
@@ -60,7 +62,9 @@ if(NTP_CLIENT_BUILD_TESTS)
   ntp_fetch_gtest(TAG v1.14.0)
   enable_testing()
   add_executable(ntpclient_tests tests/ntp_client_test.cc)
-  target_include_directories(ntpclient_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ntpserver/include)
+  target_include_directories(ntpclient_tests PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR} 
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ntpserver/include)
   target_link_libraries(ntpclient_tests PRIVATE ntpclient gtest gtest_main ws2_32)
   if(MSVC)
     target_compile_options(ntpclient_tests PRIVATE /W4 /permissive-)
