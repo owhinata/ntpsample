@@ -8,4 +8,4 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_subdirectory(ntpserver)
-add_subdirectory(ntpclient)
+add_subdirectory(ntpclock)
