@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
@@ -141,6 +142,12 @@ struct ntpclock::ClockService::Impl {
 
   // Worker
   void Loop();
+
+  // Simple estimators/storage
+  static constexpr size_t kOffsetWindow = 5;
+  static constexpr size_t kSkewWindow = 20;
+  std::vector<double> offsets_;
+  std::vector<double> times_;
 };
 
 namespace {
@@ -272,12 +279,18 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
 }
 
 void ntpclock::ClockService::Impl::Loop() {
-  const double step_thresh_s = opts.StepThresholdMs() / 1000.0;
-  const double slew_rate_s_per_s = opts.SlewRateMsPerSec() / 1000.0;
-  const int poll_interval_ms = opts.PollIntervalMs();
+  // Loop until stopped; snapshot options each iteration for runtime changes.
 
   int good_samples = 0;
   while (running.load(std::memory_order_acquire)) {
+    auto snapshot = [&]() {
+      std::lock_guard<std::mutex> lk(opts_mtx);
+      return opts;  // copy
+    }();
+    const double step_thresh_s = snapshot.StepThresholdMs() / 1000.0;
+    const double slew_rate_s_per_s = snapshot.SlewRateMsPerSec() / 1000.0;
+    const int poll_interval_ms = snapshot.PollIntervalMs();
+
     double sample_offset_s = 0.0;
     int sample_rtt_ms = 0;
     std::string err;
@@ -293,11 +306,28 @@ void ntpclock::ClockService::Impl::Loop() {
     st_local.last_correction = Status::Correction::None;
     st_local.last_correction_amount_s = 0.0;
 
-    if (ok && sample_rtt_ms <= opts.MaxRttMs()) {
-      // Target is the latest sample (could be improved with filters/EMA)
+    if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
+      // Record sample time for estimators
+      double tnow = 0.0;
       {
+        std::lock_guard<std::mutex> lk(opts_mtx);
+        tnow = opts.TimeSourcePtr()->NowUnix();
+      }
+      // Keep sliding windows
+      offsets_.push_back(sample_offset_s);
+      times_.push_back(tnow);
+      if (offsets_.size() > kSkewWindow) offsets_.erase(offsets_.begin());
+      if (times_.size() > kSkewWindow) times_.erase(times_.begin());
+
+      // Compute robust target: median of last kOffsetWindow
+      {
+        size_t n = offsets_.size();
+        size_t start = (n > kOffsetWindow) ? (n - kOffsetWindow) : 0;
+        std::vector<double> tmp(offsets_.begin() + start, offsets_.end());
+        std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
+        double median = tmp[tmp.size() / 2];
         std::lock_guard<std::mutex> lk(est_mtx);
-        offset_target_s = sample_offset_s;
+        offset_target_s = median;
       }
 
       double applied = offset_applied_s.load(std::memory_order_relaxed);
@@ -325,15 +355,32 @@ void ntpclock::ClockService::Impl::Loop() {
       }
 
       good_samples++;
-      st_local.synchronized = (good_samples >= opts.MinSamplesToLock());
-      {
-        std::lock_guard<std::mutex> lk(opts_mtx);
-        st_local.last_update_unix_s = opts.TimeSourcePtr()->NowUnix();
+      st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
+      st_local.last_update_unix_s = tnow;
+      // Estimate skew (ppm) via simple OLS slope of offset over time
+      if (times_.size() >= 2) {
+        size_t n = std::min(times_.size(), kSkewWindow);
+        double mean_t = 0.0, mean_o = 0.0;
+        for (size_t i = times_.size() - n; i < times_.size(); ++i) {
+          mean_t += times_[i];
+          mean_o += offsets_[i];
+        }
+        mean_t /= static_cast<double>(n);
+        mean_o /= static_cast<double>(n);
+        double num = 0.0, den = 0.0;
+        for (size_t i = times_.size() - n; i < times_.size(); ++i) {
+          double dt = times_[i] - mean_t;
+          double doff = offsets_[i] - mean_o;
+          num += dt * doff;
+          den += dt * dt;
+        }
+        double slope = (den > 0.0) ? (num / den) : 0.0;  // sec offset per sec
+        st_local.skew_ppm = slope * 1e6;                 // convert to ppm
       }
       st_local.samples = good_samples;
     } else {
       // Failure; keep previous applied offset, keep trying.
-      st_local.synchronized = (good_samples >= opts.MinSamplesToLock());
+      st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
       st_local.last_error = err.empty() ? "sample rejected" : err;
     }
 
