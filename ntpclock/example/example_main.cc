@@ -5,7 +5,7 @@
  * Usage:
  *   ntpclock_example --ip 127.0.0.1 --port 9123 \
  *     --poll 1000 --step 200 --slew 5.0 --max-rtt 100 \
- *     --offset-window 5 --skew-window 20 --duration 10
+ *     --offset-window 5 --skew-window 20
  */
 
 #include <cstdio>
@@ -14,11 +14,52 @@
 #include <string>
 #include <thread>
 #include <chrono>
-#include <sstream>
+#include <vector>
+#include <algorithm>
 
 #include "ntpclock/clock_service.hpp"
 
 namespace {
+// On Windows consoles, enable ANSI escape processing for in-place refresh.
+#if defined(_WIN32)
+#include <windows.h>
+void EnableVirtualTerminal() {
+  HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (hOut == INVALID_HANDLE_VALUE) return;
+  DWORD mode = 0;
+  if (!GetConsoleMode(hOut, &mode)) return;
+  mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+  SetConsoleMode(hOut, mode);
+}
+int TermWidth() {
+  CONSOLE_SCREEN_BUFFER_INFO info{};
+  HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (GetConsoleScreenBufferInfo(hOut, &info)) {
+    return static_cast<int>(info.srWindow.Right - info.srWindow.Left + 1);
+  }
+  return 120;
+}
+#else
+void EnableVirtualTerminal() {}
+int TermWidth() { return 120; }
+#endif
+
+std::string OneLine(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (c == '\n' || c == '\r') {
+      out.push_back(' ');
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+void HideCur() { std::printf("\x1b[?25l"); }
+void ShowCur() { std::printf("\x1b[?25h"); }
+void MoveRow(int row) { std::printf("\x1b[%d;1H", row); }
+static void AtExitShowCur() { ShowCur(); }
 void PrintUsage() {
   std::fprintf(stderr,
                "Usage: ntpclock_example --ip A.B.C.D --port N [options]\n"
@@ -28,15 +69,13 @@ void PrintUsage() {
                "  --slew ms_per_s      (default 5.0)\n"
                "  --max-rtt ms         (default 100)\n"
                "  --offset-window n    (default 5)\n"
-               "  --skew-window n      (default 20)\n"
-               "  --duration sec       (default 10)\n");
+               "  --skew-window n      (default 20)\n");
 }
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string ip = "127.0.0.1";
   uint16_t port = 9123;
-  int duration_sec = 10;
 
   auto builder = ntpclock::Options::Builder();
 
@@ -59,8 +98,6 @@ int main(int argc, char** argv) {
       builder.OffsetWindow(std::atoi(argv[++i]));
     } else if (a == "--skew-window" && need(1)) {
       builder.SkewWindow(std::atoi(argv[++i]));
-    } else if (a == "--duration" && need(1)) {
-      duration_sec = std::atoi(argv[++i]);
     } else if (a == "-h" || a == "--help") {
       PrintUsage();
       return 0;
@@ -73,29 +110,55 @@ int main(int argc, char** argv) {
 
   ntpclock::ClockService svc;
   auto opt = builder.Build();
-  std::ostringstream oss;
-  oss << opt;
-  std::string opt_str = oss.str();
-  std::printf("Starting sync to %s:%u with options: %s\n",
-              ip.c_str(), port, opt_str.c_str());
+  std::printf("Starting sync to %s:%u\n", ip.c_str(), port);
+  EnableVirtualTerminal();
+  HideCur();
+  std::atexit(AtExitShowCur);
 
   if (!svc.Start(ip, port, opt)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
 
-  auto t0 = std::chrono::steady_clock::now();
-  while (std::chrono::duration_cast<std::chrono::seconds>(
-             std::chrono::steady_clock::now() - t0)
-             .count() < duration_sec) {
-    auto st = svc.GetStatus();
-    double now = svc.NowUnix();
-    std::ostringstream osst;
-    osst << st;
-    std::string st_str = osst.str();
-    std::printf("now=%.6f | %s\n", now, st_str.c_str());
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  // Double-buffer: update only changed lines to reduce flicker.
+  std::vector<std::string> prev(11);
+  std::printf("\x1b[H");
+  while (true) {
+    const int cols = TermWidth();
+    ntpclock::Status st = svc.GetStatus();
+    double now_s = svc.NowUnix();
+    std::string err = st.last_error.empty() ? std::string("") : OneLine(st.last_error);
+    int cap = (cols - 7 > 0) ? (cols - 7) : 0;
+    if ((int)err.size() > cap) err.resize(static_cast<size_t>(cap));
+
+    char buf[256];
+    std::vector<std::string> cur;
+    cur.reserve(11);
+    std::snprintf(buf, sizeof(buf), "now=%.6f", now_s); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "sync=%s", st.synchronized ? "true" : "false"); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "rtt_ms=%d  delay_s=%.3f", st.rtt_ms, st.last_delay_s); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "offset_s=%.6f  skew_ppm=%.1f", st.offset_s, st.skew_ppm); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "samples=%d  last_update=%.3f", st.samples, st.last_update_unix_s); cur.emplace_back(buf);
+    const char* corr = st.last_correction == ntpclock::Status::Correction::Step ? "Step"
+                        : (st.last_correction == ntpclock::Status::Correction::Slew ? "Slew" : "None");
+    std::snprintf(buf, sizeof(buf), "last_corr=%s  amount=%.6f", corr, st.last_correction_amount_s); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "offset_window=%d  skew_window=%d  window_count=%d", st.offset_window, st.skew_window, st.window_count); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "median=%.6f  min=%.6f  max=%.6f", st.offset_median_s, st.offset_min_s, st.offset_max_s); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "applied=%.6f  target=%.6f", st.offset_applied_s, st.offset_target_s); cur.emplace_back(buf);
+    cur.emplace_back(std::string("error=") + err);
+    while (cur.size() < prev.size()) cur.emplace_back("");
+    for (auto& s : cur) { if ((int)s.size() > cols) s.resize(cols); }
+    for (size_t i = 0; i < cur.size(); ++i) {
+      if (prev[i] == cur[i]) continue;
+      MoveRow((int)i + 1);
+      std::printf("\x1b[2K");
+      std::fwrite(cur[i].data(), 1, cur[i].size(), stdout);
+      std::printf("\n");
+    }
+    std::fflush(stdout);
+    prev.swap(cur);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
-  svc.Stop();
+  // not reached
   return 0;
 }
