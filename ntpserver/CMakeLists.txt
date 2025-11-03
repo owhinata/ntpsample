@@ -17,6 +17,7 @@ file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
 set(NTPSERVER_SOURCES
     src/ntp_server.cc
     src/qpc_clock.cc
+    src/ntp_extension.cc
 )
 
 if(NTP_SERVER_BUILD_SHARED)
@@ -79,6 +80,7 @@ if(NTP_SERVER_BUILD_TESTS)
     enable_testing()
     add_executable(ntpserver_tests
         tests/ntp_server_test.cc
+        tests/ntp_extension_test.cc
     )
     target_link_libraries(ntpserver_tests PRIVATE ntpserver gtest gtest_main ws2_32)
     target_include_directories(ntpserver_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
