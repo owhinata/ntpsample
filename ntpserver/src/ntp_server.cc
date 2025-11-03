@@ -235,35 +235,71 @@ class NtpServer::Impl {
     return ready > 0;
   }
 
-  /** Receives one datagram and sends a response. */
+  /**
+   * @brief Receives one NTP datagram and sends a response.
+   * @details Orchestrates receive -> build response -> append EF -> remember
+   *          client -> send.
+   */
   void HandleSingleDatagram(TimeSource* ts) {
     sockaddr_in cli{};
     int clen = sizeof(cli);
     NtpPacket req{};
-    int n = recvfrom(sock_, reinterpret_cast<char*>(&req), sizeof(req), 0,
-                     reinterpret_cast<sockaddr*>(&cli), &clen);
-    if (n <= 0) return;
+    if (!ReceiveNtp(&cli, &clen, &req)) return;
 
-    const double t_recv = ts->NowUnix();
-    const double t_ref = t_recv;
+    double t_recv = 0.0;
+    NtpPacket resp = MakeResponse(req, ts, &t_recv);
+    std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix());
+    std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
+    RememberClient(cli, t_recv);
+    SendBuf(cli, clen, buf);
+  }
+
+  /**
+   * @brief Receive one NTP request from socket.
+   * @param cli  Output: client address.
+   * @param clen Input/Output: address length.
+   * @param req  Output: NTP request.
+   * @return true if a datagram was received.
+   */
+  bool ReceiveNtp(sockaddr_in* cli, int* clen, NtpPacket* req) {
+    int n = recvfrom(sock_, reinterpret_cast<char*>(req), sizeof(*req), 0,
+                     reinterpret_cast<sockaddr*>(cli), clen);
+    return n > 0;
+  }
+
+  /**
+   * @brief Build an NTP response packet (no extension fields).
+   * @param req     Client request packet.
+   * @param ts      Time source used for timestamps.
+   * @param t_recv  Output: receive time used in response.
+   */
+  NtpPacket MakeResponse(const NtpPacket& req, TimeSource* ts, double* t_recv) {
+    const double tr = ts->NowUnix();
+    const double t_ref = tr;
     const double t_tx = ts->NowUnix();
-
+    if (t_recv) *t_recv = tr;
     NtpPacket resp{};
-    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, t_recv,
-                        t_tx, &resp);
+    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, tr, t_tx,
+                        &resp);
+    return resp;
+  }
 
-    // Build vendor extension (ABS + RATE) and append as NTP EF
+  /**
+   * @brief Build vendor extension field (ABS+RATE) bytes.
+   * @param ts         Time source to query rate.
+   * @param server_now Server absolute time to embed.
+   */
+  std::vector<uint8_t> MakeVendorEf(TimeSource* ts, double server_now) {
     NtpVendorExt::Payload v{};
     v.seq = ++ctrl_seq_;
     v.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
-    v.server_unix_s = t_tx;
-    v.abs_unix_s = t_tx;
+    v.server_unix_s = server_now;
+    v.abs_unix_s = server_now;
     v.rate_scale = ts->GetRate();
     std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
 
-    // EF header: type(2) + length(2) + value
-    const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;        // host order
-    const uint16_t len = static_cast<uint16_t>(val.size() + 4);  // host order
+    const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;
+    const uint16_t len = static_cast<uint16_t>(val.size() + 4);
     std::vector<uint8_t> ef;
     ef.reserve(4 + val.size());
     ef.push_back(static_cast<uint8_t>((typ >> 8) & 0xFF));
@@ -271,17 +307,29 @@ class NtpServer::Impl {
     ef.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
     ef.push_back(static_cast<uint8_t>(len & 0xFF));
     ef.insert(ef.end(), val.begin(), val.end());
+    return ef;
+  }
 
-    // Compose full response buffer
+  /**
+   * @brief Concatenate response header and EF bytes.
+   */
+  std::vector<uint8_t> ComposeWithEf(const NtpPacket& resp,
+                                     const std::vector<uint8_t>& ef) {
     std::vector<uint8_t> buf(sizeof(resp) + ef.size());
     std::memcpy(buf.data(), &resp, sizeof(resp));
-    std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
+    if (!ef.empty())
+      std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
+    return buf;
+  }
 
-    // remember client and reply
-    RememberClient(cli, t_recv);
+  /**
+   * @brief Send raw response buffer to client.
+   */
+  void SendBuf(const sockaddr_in& cli, int clen,
+               const std::vector<uint8_t>& buf) {
     sendto(sock_, reinterpret_cast<const char*>(buf.data()),
-           static_cast<int>(buf.size()), 0, reinterpret_cast<sockaddr*>(&cli),
-           clen);
+           static_cast<int>(buf.size()), 0,
+           reinterpret_cast<const sockaddr*>(&cli), clen);
   }
 
   void RememberClient(const sockaddr_in& cli, double now_unix) {
