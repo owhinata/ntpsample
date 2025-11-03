@@ -131,32 +131,12 @@ class NtpServer::Impl {
     if (sock_ == INVALID_SOCKET) return;
     const double now = ts->NowUnix();
 
-    // Build a minimal response packet (mode 4 framing) + EF once.
+    // Minimal mode-4 response and EF using SRP helpers
     NtpPacket resp{};
     BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now, now, now,
                         &resp);
-
-    NtpVendorExt::Payload v{};
-    v.seq = ++ctrl_seq_;
-    v.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
-    v.server_unix_s = now;
-    v.abs_unix_s = now;
-    v.rate_scale = ts->GetRate();
-    std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
-
-    const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;
-    const uint16_t len = static_cast<uint16_t>(val.size() + 4);
-    std::vector<uint8_t> ef;
-    ef.reserve(4 + val.size());
-    ef.push_back(static_cast<uint8_t>((typ >> 8) & 0xFF));
-    ef.push_back(static_cast<uint8_t>(typ & 0xFF));
-    ef.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
-    ef.push_back(static_cast<uint8_t>(len & 0xFF));
-    ef.insert(ef.end(), val.begin(), val.end());
-
-    std::vector<uint8_t> buf(sizeof(resp) + ef.size());
-    std::memcpy(buf.data(), &resp, sizeof(resp));
-    std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
+    std::vector<uint8_t> ef = MakeVendorEf(ts, now);
+    std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
     // prune and send
     const double cutoff = now - 60.0;
