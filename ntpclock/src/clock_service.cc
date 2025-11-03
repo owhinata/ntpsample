@@ -48,6 +48,8 @@ ntpclock::Options::Builder::Builder(const Options& base)
       slew_rate_ms_per_s_(base.SlewRateMsPerSec()),
       max_rtt_ms_(base.MaxRttMs()),
       min_samples_to_lock_(base.MinSamplesToLock()),
+      offset_window_(base.OffsetWindow()),
+      skew_window_(base.SkewWindow()),
       time_source_(base.TimeSourcePtr()) {}
 
 ntpclock::Options::Builder& ntpclock::Options::Builder::PollIntervalMs(int v) {
