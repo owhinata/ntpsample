@@ -57,6 +57,11 @@ void QpcClock::SetAbsolute(double unix_sec) {
   offset_ = unix_sec - (start_unix_ + rate_ * Elapsed());
 }
 
+double QpcClock::GetRate() const {
+  std::lock_guard<std::mutex> lk(mtx_);
+  return rate_;
+}
+
 QpcClock& QpcClock::Instance() {
   static QpcClock ut;
   return ut;

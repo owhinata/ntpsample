@@ -22,6 +22,13 @@ class TimeSource {
 
   /** Sets progression rate multiplier (1.0 = real time). */
   virtual void SetRate(double /*rate*/) = 0;
+
+  /**
+   * @brief Returns current progression rate multiplier.
+   *
+   * Default implementations may return 1.0 if unknown.
+   */
+  virtual double GetRate() const { return 1.0; }
 };
 
 }  // namespace ntpserver

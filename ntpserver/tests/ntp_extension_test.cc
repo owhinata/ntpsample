@@ -10,9 +10,9 @@
  *  - Invalid magic/version yields Parse()==false.
  */
 
-#include <gtest/gtest.h>
-
 #include "ntpserver/ntp_extension.hpp"
+
+#include <gtest/gtest.h>
 
 namespace {
 
@@ -59,4 +59,3 @@ TEST(NtpExtensionTest, RejectsBadMagicAndVersion) {
 }
 
 }  // namespace
-

@@ -26,6 +26,8 @@ class QpcClock : public TimeSource {
   // Adjustments
   /** Sets progression rate (default 1.0). */
   void SetRate(double rate) override;
+  /** Gets progression rate. */
+  double GetRate() const override;
   /** Adds a relative offset in seconds to the current time. */
   void AdjustOffset(double delta);
   /** Sets absolute time in UNIX seconds. */

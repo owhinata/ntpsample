@@ -17,7 +17,9 @@
 #include <cstdint>
 #include <mutex>
 #include <thread>
+#include <vector>
 
+#include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -202,8 +204,34 @@ class NtpServer::Impl {
     BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, t_recv,
                         t_tx, &resp);
 
-    sendto(sock_, reinterpret_cast<const char*>(&resp), sizeof(resp), 0,
-           reinterpret_cast<sockaddr*>(&cli), clen);
+    // Build vendor extension (ABS + RATE) and append as NTP EF
+    NtpVendorExt::Payload v{};
+    v.seq = ++ctrl_seq_;
+    v.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
+    v.server_unix_s = t_tx;
+    v.abs_unix_s = t_tx;
+    v.rate_scale = ts->GetRate();
+    std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
+
+    // EF header: type(2) + length(2) + value
+    const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;        // host order
+    const uint16_t len = static_cast<uint16_t>(val.size() + 4);  // host order
+    std::vector<uint8_t> ef;
+    ef.reserve(4 + val.size());
+    ef.push_back(static_cast<uint8_t>((typ >> 8) & 0xFF));
+    ef.push_back(static_cast<uint8_t>(typ & 0xFF));
+    ef.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+    ef.push_back(static_cast<uint8_t>(len & 0xFF));
+    ef.insert(ef.end(), val.begin(), val.end());
+
+    // Compose full response buffer
+    std::vector<uint8_t> buf(sizeof(resp) + ef.size());
+    std::memcpy(buf.data(), &resp, sizeof(resp));
+    std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
+
+    sendto(sock_, reinterpret_cast<const char*>(buf.data()),
+           static_cast<int>(buf.size()), 0, reinterpret_cast<sockaddr*>(&cli),
+           clen);
   }
 
   std::thread thread_;
@@ -216,6 +244,7 @@ class NtpServer::Impl {
   uint8_t stratum_{1};
   int8_t precision_{-20};
   uint32_t ref_id_be_{htonl(0x4C4F434C)};  // "LOCL"
+  uint32_t ctrl_seq_{0};
 };
 
 NtpServer::NtpServer() : impl_(new Impl) {}

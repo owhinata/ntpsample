@@ -7,11 +7,13 @@
 #include <cmath>
 #include <cstdint>
 #include <thread>
+#include <vector>
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
+#include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/ntp_server.hpp"
 
 namespace ntpserver {
@@ -60,6 +62,7 @@ class FakeTimeSource : public TimeSource {
     // No-op for tests; could emulate rate if needed.
     (void)rate;
   }
+  double GetRate() const override { return 1.0; }
   void Set(double t) { value_.store(t); }
 
  private:
@@ -133,10 +136,14 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
 
   sockaddr_in from{};
   int fromlen = sizeof(from);
-  NtpPacket resp{};
-  int n = recvfrom(sock, reinterpret_cast<char*>(&resp), sizeof(resp), 0,
+  // Read up to one MTU; server may append extension field
+  std::vector<uint8_t> rx(1500);
+  int n = recvfrom(sock, reinterpret_cast<char*>(rx.data()),
+                   static_cast<int>(rx.size()), 0,
                    reinterpret_cast<sockaddr*>(&from), &fromlen);
-  ASSERT_EQ(n, static_cast<int>(sizeof(resp)));
+  ASSERT_GE(n, static_cast<int>(sizeof(NtpPacket)));
+  NtpPacket resp{};
+  std::memcpy(&resp, rx.data(), sizeof(resp));
 
   // Basic header checks
   uint8_t mode = resp.li_vn_mode & 0x07;
@@ -152,6 +159,25 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
   uint64_t expected = Hton64(ToNtpTimestamp(ts.NowUnix()));
   EXPECT_EQ(resp.recv_timestamp, expected);
   EXPECT_EQ(resp.tx_timestamp, expected);
+
+  // If extension field is present, parse and validate vendor hint payload
+  if (n > static_cast<int>(sizeof(NtpPacket))) {
+    const uint8_t* p = rx.data() + sizeof(NtpPacket);
+    size_t remain = static_cast<size_t>(n) - sizeof(NtpPacket);
+    ASSERT_GE(remain, 4U);
+    uint16_t typ = static_cast<uint16_t>((p[0] << 8) | p[1]);
+    uint16_t len = static_cast<uint16_t>((p[2] << 8) | p[3]);
+    ASSERT_EQ(typ, NtpVendorExt::kEfTypeVendorHint);
+    ASSERT_LE(4U, remain);
+    ASSERT_LE(static_cast<size_t>(len), remain);
+    std::vector<uint8_t> val(p + 4, p + len);
+    NtpVendorExt::Payload v{};
+    ASSERT_TRUE(NtpVendorExt::Parse(val, &v));
+    EXPECT_EQ(v.flags, NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate);
+    EXPECT_DOUBLE_EQ(v.server_unix_s, ts.NowUnix());
+    EXPECT_DOUBLE_EQ(v.abs_unix_s, ts.NowUnix());
+    EXPECT_DOUBLE_EQ(v.rate_scale, 1.0);
+  }
 
   closesocket(sock);
   server.Stop();

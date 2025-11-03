@@ -1,4 +1,7 @@
 /**
+ *
+ * Copyright 2025 Contributors
+ *
  * @file ntp_extension.hpp
  * @brief NTP Extension Field for vendor hints (ABS/RATE propagation).
  *
@@ -47,6 +50,8 @@ struct NtpVendorExt {
   static constexpr uint32_t kMagic = 0x4e545043u;  // 'N''T''P''C'
   /** Version of payload format. */
   static constexpr uint8_t kVersion = 1;
+  /** NTP Extension Field type code (private/experimental). */
+  static constexpr uint16_t kEfTypeVendorHint = 0xFF01;
 
   /** flags bit positions */
   enum : uint8_t {
