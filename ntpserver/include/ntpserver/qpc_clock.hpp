@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 
 #include "ntpserver/time_source.hpp"
 
@@ -48,6 +49,7 @@ class QpcClock : public TimeSource {
   double start_unix_;
   double rate_;
   double offset_;
+  mutable std::mutex mtx_;
 };
 
 }  // namespace ntpserver
