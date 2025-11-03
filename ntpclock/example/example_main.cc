@@ -18,6 +18,9 @@
 #include <algorithm>
 
 #include "ntpclock/clock_service.hpp"
+#include <ctime>
+#include <sstream>
+#include <iomanip>
 
 namespace {
 // On Windows consoles, enable ANSI escape processing for in-place refresh.
@@ -76,6 +79,7 @@ void PrintUsage() {
 int main(int argc, char** argv) {
   std::string ip = "127.0.0.1";
   uint16_t port = 9123;
+  bool opt_utc = false;  // default: JST
 
   auto builder = ntpclock::Options::Builder();
 
@@ -98,6 +102,8 @@ int main(int argc, char** argv) {
       builder.OffsetWindow(std::atoi(argv[++i]));
     } else if (a == "--skew-window" && need(1)) {
       builder.SkewWindow(std::atoi(argv[++i]));
+    } else if (a == "--utc") {
+      opt_utc = true;
     } else if (a == "-h" || a == "--help") {
       PrintUsage();
       return 0;
@@ -127,6 +133,31 @@ int main(int argc, char** argv) {
     const int cols = TermWidth();
     ntpclock::Status st = svc.GetStatus();
     double now_s = svc.NowUnix();
+    std::string now_line;
+    {
+      const int offset = opt_utc ? 0 : 9 * 3600;
+      const char* tzlabel = opt_utc ? "UTC" : "JST";
+      long long isec = static_cast<long long>(now_s);
+      long long adj = isec + offset;
+      std::tm tm{};
+#if defined(_WIN32)
+      time_t t = static_cast<time_t>(adj);
+      gmtime_s(&tm, &t);
+#else
+      time_t t = static_cast<time_t>(adj);
+      tm = *std::gmtime(&t);
+#endif
+      double frac = now_s - static_cast<double>(isec);
+      if (frac < 0) frac = 0;
+      int ms = static_cast<int>(frac * 1000.0 + 0.5);
+      if (ms >= 1000) { ms -= 1000; }
+      char tbuf[64];
+      std::snprintf(tbuf, sizeof(tbuf),
+                    "now=%04d-%02d-%02d %02d:%02d:%02d.%03d %s",
+                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                    tm.tm_hour, tm.tm_min, tm.tm_sec, ms, tzlabel);
+      now_line = tbuf;
+    }
     std::string err = st.last_error.empty() ? std::string("") : OneLine(st.last_error);
     int cap = (cols - 7 > 0) ? (cols - 7) : 0;
     if ((int)err.size() > cap) err.resize(static_cast<size_t>(cap));
@@ -134,7 +165,7 @@ int main(int argc, char** argv) {
     char buf[256];
     std::vector<std::string> cur;
     cur.reserve(11);
-    std::snprintf(buf, sizeof(buf), "now=%.6f", now_s); cur.emplace_back(buf);
+    cur.emplace_back(now_line);
     std::snprintf(buf, sizeof(buf), "sync=%s", st.synchronized ? "true" : "false"); cur.emplace_back(buf);
     std::snprintf(buf, sizeof(buf), "rtt_ms=%d  delay_s=%.3f", st.rtt_ms, st.last_delay_s); cur.emplace_back(buf);
     std::snprintf(buf, sizeof(buf), "offset_s=%.6f  skew_ppm=%.1f", st.offset_s, st.skew_ppm); cur.emplace_back(buf);
