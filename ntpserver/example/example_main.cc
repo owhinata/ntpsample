@@ -80,19 +80,22 @@ int main(int argc, char** argv) {
     if (std::strncmp(line, "rate ", 5) == 0) {
       double r = std::atof(line + 5);
       ts.SetRate(r);
-      std::printf("rate set to %.6f\n", r);
+      server.NotifyControlSnapshot();
+      std::printf("rate set to %.6f (notify)\n", r);
       continue;
     }
     if (std::strncmp(line, "abs ", 4) == 0) {
       double t = std::atof(line + 4);
       ts.SetAbsolute(t);
-      std::printf("absolute set to %.6f\n", t);
+      server.NotifyControlSnapshot();
+      std::printf("absolute set to %.6f (notify)\n", t);
       continue;
     }
     if (std::strncmp(line, "add ", 4) == 0) {
       double d = std::atof(line + 4);
       ts.AdjustOffset(d);
-      std::printf("offset adjusted by %+f\n", d);
+      server.NotifyControlSnapshot();
+      std::printf("offset adjusted by %+f (notify)\n", d);
       continue;
     }
     std::fprintf(stderr, "unknown command: %s\n", line);

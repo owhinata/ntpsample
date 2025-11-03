@@ -39,6 +39,15 @@ class NTP_SERVER_API NtpServer {
   /** Sets reference ID (network byte order, default: "LOCL"). */
   void SetRefId(uint32_t ref_id_be);
 
+  /**
+   * @brief Sends a control snapshot (ABS/RATE via NTP EF) to known clients.
+   *
+   * The server tracks recently seen client endpoints (from requests). When
+   * configuration changes (e.g., SetAbsolute/SetRate on the TimeSource), call
+   * this method to actively notify clients between polls.
+   */
+  void NotifyControlSnapshot();
+
  private:
   class Impl;
   std::unique_ptr<Impl> impl_;

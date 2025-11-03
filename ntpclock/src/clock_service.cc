@@ -159,6 +159,7 @@ struct ntpclock::ClockService::Impl {
 
   // Networking
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms, std::string* err);
+  uint32_t last_ctrl_seq{0};
 
   // Worker
   void Loop();
@@ -301,42 +302,48 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
         std::vector<uint8_t> val(p + 4, p + len);
         ntpserver::NtpVendorExt::Payload v{};
         if (ntpserver::NtpVendorExt::Parse(val, &v)) {
-          // Apply changes only if they differ meaningfully.
-          bool reset = false;
-          // Access time source under opts_mtx
-          ntpserver::TimeSource* ts = nullptr;
-          int step_ms = 0;
-          {
-            std::lock_guard<std::mutex> lk(opts_mtx);
-            ts = opts.TimeSourcePtr();
-            step_ms = opts.StepThresholdMs();
-          }
-          if (ts != nullptr) {
-            const double rate_eps = 1e-12;  // ~1e-6 ppm
-            if ((v.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U) {
-              double cur_rate = ts->GetRate();
-              if (std::abs(v.rate_scale - cur_rate) > rate_eps) {
-                ts->SetRate(v.rate_scale);
-                reset = true;
+          // Deduplicate by sequence; ignore stale or duplicate notifications.
+          if (v.seq <= last_ctrl_seq) {
+            // fall through to normal NTP handling
+          } else {
+            last_ctrl_seq = v.seq;
+            // Apply changes only if they differ meaningfully.
+            bool reset = false;
+            // Access time source under opts_mtx
+            ntpserver::TimeSource* ts = nullptr;
+            int step_ms = 0;
+            {
+              std::lock_guard<std::mutex> lk(opts_mtx);
+              ts = opts.TimeSourcePtr();
+              step_ms = opts.StepThresholdMs();
+            }
+            if (ts != nullptr) {
+              const double rate_eps = 1e-12;  // ~1e-6 ppm
+              if ((v.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U) {
+                double cur_rate = ts->GetRate();
+                if (std::abs(v.rate_scale - cur_rate) > rate_eps) {
+                  ts->SetRate(v.rate_scale);
+                  reset = true;
+                }
+              }
+              if ((v.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U) {
+                double cur = ts->NowUnix();
+                double abs_thresh = std::max(0, step_ms) / 1000.0;
+                if (std::abs(v.abs_unix_s - cur) >= abs_thresh) {
+                  ts->SetAbsolute(v.abs_unix_s);
+                  reset = true;
+                  // Allow a single backward jump immediately after a step
+                  allow_backward_once.store(true, std::memory_order_relaxed);
+                }
               }
             }
-            if ((v.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U) {
-              double cur = ts->NowUnix();
-              double abs_thresh = std::max(0, step_ms) / 1000.0;
-              if (std::abs(v.abs_unix_s - cur) >= abs_thresh) {
-                ts->SetAbsolute(v.abs_unix_s);
-                reset = true;
-                // Allow a single backward jump immediately after a step
-                allow_backward_once.store(true, std::memory_order_relaxed);
-              }
+            if (reset) {
+              std::lock_guard<std::mutex> lk(est_mtx);
+              offsets_.clear();
+              times_.clear();
+              offset_applied_s.store(0.0, std::memory_order_relaxed);
+              offset_target_s = 0.0;
             }
-          }
-          if (reset) {
-            std::lock_guard<std::mutex> lk(est_mtx);
-            offsets_.clear();
-            times_.clear();
-            offset_applied_s.store(0.0, std::memory_order_relaxed);
-            offset_target_s = 0.0;
           }
         }
       }

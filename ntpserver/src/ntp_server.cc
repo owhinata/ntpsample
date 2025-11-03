@@ -12,6 +12,7 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -125,6 +126,53 @@ class NtpServer::Impl {
   void SetPrecision(int8_t p) { precision_ = p; }
   void SetRefId(uint32_t ref_be) { ref_id_be_ = ref_be; }
 
+  void NotifyControlSnapshot() {
+    TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
+    if (sock_ == INVALID_SOCKET) return;
+    const double now = ts->NowUnix();
+
+    // Build a minimal response packet (mode 4 framing) + EF once.
+    NtpPacket resp{};
+    BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now, now, now,
+                        &resp);
+
+    NtpVendorExt::Payload v{};
+    v.seq = ++ctrl_seq_;
+    v.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
+    v.server_unix_s = now;
+    v.abs_unix_s = now;
+    v.rate_scale = ts->GetRate();
+    std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
+
+    const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;
+    const uint16_t len = static_cast<uint16_t>(val.size() + 4);
+    std::vector<uint8_t> ef;
+    ef.reserve(4 + val.size());
+    ef.push_back(static_cast<uint8_t>((typ >> 8) & 0xFF));
+    ef.push_back(static_cast<uint8_t>(typ & 0xFF));
+    ef.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+    ef.push_back(static_cast<uint8_t>(len & 0xFF));
+    ef.insert(ef.end(), val.begin(), val.end());
+
+    std::vector<uint8_t> buf(sizeof(resp) + ef.size());
+    std::memcpy(buf.data(), &resp, sizeof(resp));
+    std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
+
+    // prune and send
+    const double cutoff = now - 60.0;
+    auto it = clients_.begin();
+    while (it != clients_.end()) {
+      if (it->last_seen < cutoff) {
+        it = clients_.erase(it);
+        continue;
+      }
+      sendto(sock_, reinterpret_cast<const char*>(buf.data()),
+             static_cast<int>(buf.size()), 0,
+             reinterpret_cast<sockaddr*>(&it->addr), sizeof(it->addr));
+      ++it;
+    }
+  }
+
  private:
   /** Initializes WinSock. */
   bool InitializeWinsock() {
@@ -229,9 +277,22 @@ class NtpServer::Impl {
     std::memcpy(buf.data(), &resp, sizeof(resp));
     std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
 
+    // remember client and reply
+    RememberClient(cli, t_recv);
     sendto(sock_, reinterpret_cast<const char*>(buf.data()),
            static_cast<int>(buf.size()), 0, reinterpret_cast<sockaddr*>(&cli),
            clen);
+  }
+
+  void RememberClient(const sockaddr_in& cli, double now_unix) {
+    for (auto& c : clients_) {
+      if (c.addr.sin_addr.s_addr == cli.sin_addr.s_addr &&
+          c.addr.sin_port == cli.sin_port) {
+        c.last_seen = now_unix;
+        return;
+      }
+    }
+    clients_.push_back(Client{cli, now_unix});
   }
 
   std::thread thread_;
@@ -245,6 +306,11 @@ class NtpServer::Impl {
   int8_t precision_{-20};
   uint32_t ref_id_be_{htonl(0x4C4F434C)};  // "LOCL"
   uint32_t ctrl_seq_{0};
+  struct Client {
+    sockaddr_in addr{};
+    double last_seen{0.0};
+  };
+  std::vector<Client> clients_;
 };
 
 NtpServer::NtpServer() : impl_(new Impl) {}
@@ -256,5 +322,6 @@ void NtpServer::SetTimeSource(TimeSource* src) { impl_->SetTimeSource(src); }
 void NtpServer::SetStratum(uint8_t s) { impl_->SetStratum(s); }
 void NtpServer::SetPrecision(int8_t p) { impl_->SetPrecision(p); }
 void NtpServer::SetRefId(uint32_t ref_id_be) { impl_->SetRefId(ref_id_be); }
+void NtpServer::NotifyControlSnapshot() { impl_->NotifyControlSnapshot(); }
 
 }  // namespace ntpserver
