@@ -27,6 +27,8 @@
 #include <thread>
 #include <vector>
 
+#include "internal/offset_estimator.hpp"
+#include "internal/skew_estimator.hpp"
 #include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
@@ -460,21 +462,12 @@ void ntpclock::ClockService::Impl::Loop() {
         times_.erase(times_.begin());
 
       // Compute robust target: median of last window, and min/max for debug
-      double median = sample_offset_s;
-      double omin = sample_offset_s, omax = sample_offset_s;
+      auto stats = internal::OffsetEstimator::ComputeStats(
+          offsets_, snapshot.OffsetWindow(), sample_offset_s);
+      double median = stats.median;
+      double omin = stats.min;
+      double omax = stats.max;
       {
-        size_t n = offsets_.size();
-        size_t win = static_cast<size_t>(std::max(1, snapshot.OffsetWindow()));
-        size_t start = (n > win) ? (n - win) : 0;
-        std::vector<double> tmp(offsets_.begin() + start, offsets_.end());
-        if (!tmp.empty()) {
-          std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2,
-                           tmp.end());
-          median = tmp[tmp.size() / 2];
-          auto mm = std::minmax_element(tmp.begin(), tmp.end());
-          omin = *mm.first;
-          omax = *mm.second;
-        }
         std::lock_guard<std::mutex> lk(est_mtx);
         offset_target_s = median;
       }
@@ -508,27 +501,8 @@ void ntpclock::ClockService::Impl::Loop() {
       st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
       st_local.last_update_unix_s = tnow;
       // Estimate skew (ppm) via simple OLS slope of offset over time
-      if (times_.size() >= 2) {
-        size_t n =
-            std::min(times_.size(),
-                     static_cast<size_t>(std::max(1, snapshot.SkewWindow())));
-        double mean_t = 0.0, mean_o = 0.0;
-        for (size_t i = times_.size() - n; i < times_.size(); ++i) {
-          mean_t += times_[i];
-          mean_o += offsets_[i];
-        }
-        mean_t /= static_cast<double>(n);
-        mean_o /= static_cast<double>(n);
-        double num = 0.0, den = 0.0;
-        for (size_t i = times_.size() - n; i < times_.size(); ++i) {
-          double dt = times_[i] - mean_t;
-          double doff = offsets_[i] - mean_o;
-          num += dt * doff;
-          den += dt * dt;
-        }
-        double slope = (den > 0.0) ? (num / den) : 0.0;  // sec offset per sec
-        st_local.skew_ppm = slope * 1e6;                 // convert to ppm
-      }
+      st_local.skew_ppm = internal::SkewEstimator::ComputeSkewPpm(
+          times_, offsets_, snapshot.SkewWindow());
       st_local.samples = good_samples;
       st_local.offset_window = snapshot.OffsetWindow();
       st_local.skew_window = snapshot.SkewWindow();

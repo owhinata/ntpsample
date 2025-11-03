@@ -26,7 +26,9 @@ endif()
 target_include_directories(ntpclock PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(ntpclock PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../ntpserver/include)
-target_include_directories(ntpclock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(ntpclock PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 if(MSVC)
   target_compile_options(ntpclock PRIVATE /W4 /permissive-)

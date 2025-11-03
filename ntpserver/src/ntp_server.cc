@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "internal/client_tracker.hpp"
 #include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
@@ -140,10 +141,11 @@ class NtpServer::Impl {
 
     // prune and send
     const double cutoff = now - 60.0;
-    auto it = clients_.begin();
-    while (it != clients_.end()) {
+    auto& clients = client_tracker_.GetAllMutable();
+    auto it = clients.begin();
+    while (it != clients.end()) {
       if (it->last_seen < cutoff) {
-        it = clients_.erase(it);
+        it = clients.erase(it);
         continue;
       }
       sendto(sock_, reinterpret_cast<const char*>(buf.data()),
@@ -313,14 +315,7 @@ class NtpServer::Impl {
   }
 
   void RememberClient(const sockaddr_in& cli, double now_unix) {
-    for (auto& c : clients_) {
-      if (c.addr.sin_addr.s_addr == cli.sin_addr.s_addr &&
-          c.addr.sin_port == cli.sin_port) {
-        c.last_seen = now_unix;
-        return;
-      }
-    }
-    clients_.push_back(Client{cli, now_unix});
+    client_tracker_.Remember(cli, now_unix);
   }
 
   std::thread thread_;
@@ -334,11 +329,8 @@ class NtpServer::Impl {
   int8_t precision_{-20};
   uint32_t ref_id_be_{htonl(0x4C4F434C)};  // "LOCL"
   uint32_t ctrl_seq_{0};
-  struct Client {
-    sockaddr_in addr{};
-    double last_seen{0.0};
-  };
-  std::vector<Client> clients_;
+
+  internal::ClientTracker client_tracker_;
 };
 
 NtpServer::NtpServer() : impl_(new Impl) {}
