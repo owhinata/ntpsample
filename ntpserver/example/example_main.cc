@@ -79,23 +79,34 @@ int main(int argc, char** argv) {
     }
     if (std::strncmp(line, "rate ", 5) == 0) {
       double r = std::atof(line + 5);
+      double before = ts.NowUnix();
       ts.SetRate(r);
       server.NotifyControlSnapshot();
-      std::printf("rate set to %.6f (notify)\n", r);
+      double after = ts.NowUnix();
+      std::printf("rate set to %.6f (notify) before=%.6f after=%.6f\n", r,
+                  before, after);
       continue;
     }
     if (std::strncmp(line, "abs ", 4) == 0) {
       double t = std::atof(line + 4);
+      double before = ts.NowUnix();
       ts.SetAbsolute(t);
       server.NotifyControlSnapshot();
-      std::printf("absolute set to %.6f (notify)\n", t);
+      double after = ts.NowUnix();
+      std::printf("absolute set to %.6f (notify) before=%.6f after=%.6f\n", t,
+                  before, after);
       continue;
     }
     if (std::strncmp(line, "add ", 4) == 0) {
       double d = std::atof(line + 4);
-      ts.AdjustOffset(d);
+      double before = ts.NowUnix();
+      // Use absolute update to avoid cumulative rounding and ensure exact step.
+      ts.SetAbsolute(before + d);
       server.NotifyControlSnapshot();
-      std::printf("offset adjusted by %+f (notify)\n", d);
+      double after = ts.NowUnix();
+      std::printf(
+          "offset adjusted by %+f (notify) before=%.6f after=%.6f delta=%.6f\n",
+          d, before, after, after - before);
       continue;
     }
     std::fprintf(stderr, "unknown command: %s\n", line);

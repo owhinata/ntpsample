@@ -156,6 +156,9 @@ struct ntpclock::ClockService::Impl {
   // Monotonicity controls
   std::atomic<double> last_now_returned_s{0.0};
   std::atomic<bool> allow_backward_once{false};
+  // After applying a vendor ABS/RATE hint, temporarily inhibit NTP step to
+  // avoid double-application (EF step + NTP step in same cycle).
+  std::atomic<double> inhibit_step_until_s{0.0};
 
   // Networking
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms, std::string* err);
@@ -332,12 +335,18 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
   last_ctrl_seq = v.seq;
 
   bool reset = false;
+  bool did_abs = false;
+  double step_amount = 0.0;
   ntpserver::TimeSource* ts = nullptr;
   int step_ms = 0;
+
+  int poll_ms = 1000;
   {
     std::lock_guard<std::mutex> lk(opts_mtx);
     ts = opts.TimeSourcePtr();
     step_ms = opts.StepThresholdMs();
+
+    poll_ms = opts.PollIntervalMs();
   }
   if (ts == nullptr) return;
 
@@ -355,15 +364,32 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
     if (std::abs(v.abs_unix_s - cur) >= abs_thresh) {
       ts->SetAbsolute(v.abs_unix_s);
       reset = true;
+      did_abs = true;
+      step_amount = v.abs_unix_s - cur;
       allow_backward_once.store(true, std::memory_order_relaxed);
     }
   }
+
   if (reset) {
     std::lock_guard<std::mutex> lk(est_mtx);
     offsets_.clear();
     times_.clear();
     offset_applied_s.store(0.0, std::memory_order_relaxed);
     offset_target_s = 0.0;
+    // Inhibit NTP step once: skip step decisions for ~1 poll interval.
+    double now = ts->NowUnix();
+    inhibit_step_until_s.store(now + (poll_ms / 1000.0),
+                               std::memory_order_relaxed);
+    // Reflect the step in Status immediately so observers can detect it.
+    if (did_abs) {
+      std::lock_guard<std::mutex> lk2(status_mtx);
+      status.last_correction = Status::Correction::Step;
+      status.last_correction_amount_s = step_amount;
+      status.last_update_unix_s = now;
+      status.window_count = 0;
+      status.offset_applied_s = 0.0;
+      status.offset_target_s = 0.0;
+    }
   }
 }
 
@@ -402,6 +428,26 @@ void ntpclock::ClockService::Impl::Loop() {
       {
         std::lock_guard<std::mutex> lk(opts_mtx);
         tnow = opts.TimeSourcePtr()->NowUnix();
+      }
+
+      // If we recently applied a vendor ABS/RATE, skip step decisions once to
+      // avoid double-application (EF step + NTP step).
+      double inhibit_until =
+          inhibit_step_until_s.load(std::memory_order_relaxed);
+      if (tnow < inhibit_until) {
+        // Do not mutate estimators or counters; preserve last_correction.
+        // Update a subset of fields for visibility.
+        {
+          std::lock_guard<std::mutex> lk(status_mtx);
+          status.synchronized = (good_samples >= snapshot.MinSamplesToLock());
+          status.rtt_ms = sample_rtt_ms;
+          status.last_delay_s = sample_rtt_ms / 1000.0;
+          status.offset_s = sample_offset_s;
+          status.last_update_unix_s = tnow;
+          status.last_error.clear();
+        }
+        std::this_thread::sleep_for(milliseconds(poll_interval_ms));
+        continue;
       }
       // Keep sliding windows
       offsets_.push_back(sample_offset_s);
@@ -446,6 +492,7 @@ void ntpclock::ClockService::Impl::Loop() {
         allow_backward_once.store(true, std::memory_order_release);
         st_local.last_correction = Status::Correction::Step;
         st_local.last_correction_amount_s = delta;
+
       } else {
         // Slew correction (bounded rate)
         double max_change = slew_rate_s_per_s * (poll_interval_ms / 1000.0);
