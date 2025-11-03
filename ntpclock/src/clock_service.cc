@@ -161,6 +161,15 @@ struct ntpclock::ClockService::Impl {
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms, std::string* err);
   uint32_t last_ctrl_seq{0};
 
+  /**
+   * @brief Parse NTP vendor extension from a received datagram and apply.
+   *
+   * @param rx Raw datagram bytes (NTP header + optional extension fields).
+   * @note Applies SetRate/SetAbsolute when payload differences are meaningful,
+   *       and resets estimator windows accordingly. Deduplicates by sequence.
+   */
+  void ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
+
   // Worker
   void Loop();
 
@@ -292,62 +301,7 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
 
   // Parse optional NTP Extension Field for vendor hints (ABS/RATE)
   if (recvd > static_cast<int>(sizeof(NtpPacket))) {
-    const uint8_t* p = rx.data() + sizeof(NtpPacket);
-    size_t remain = static_cast<size_t>(recvd) - sizeof(NtpPacket);
-    if (remain >= 4U) {
-      uint16_t typ = static_cast<uint16_t>((p[0] << 8) | p[1]);
-      uint16_t len = static_cast<uint16_t>((p[2] << 8) | p[3]);
-      if (typ == ntpserver::NtpVendorExt::kEfTypeVendorHint && len >= 4U &&
-          len <= remain) {
-        std::vector<uint8_t> val(p + 4, p + len);
-        ntpserver::NtpVendorExt::Payload v{};
-        if (ntpserver::NtpVendorExt::Parse(val, &v)) {
-          // Deduplicate by sequence; ignore stale or duplicate notifications.
-          if (v.seq <= last_ctrl_seq) {
-            // fall through to normal NTP handling
-          } else {
-            last_ctrl_seq = v.seq;
-            // Apply changes only if they differ meaningfully.
-            bool reset = false;
-            // Access time source under opts_mtx
-            ntpserver::TimeSource* ts = nullptr;
-            int step_ms = 0;
-            {
-              std::lock_guard<std::mutex> lk(opts_mtx);
-              ts = opts.TimeSourcePtr();
-              step_ms = opts.StepThresholdMs();
-            }
-            if (ts != nullptr) {
-              const double rate_eps = 1e-12;  // ~1e-6 ppm
-              if ((v.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U) {
-                double cur_rate = ts->GetRate();
-                if (std::abs(v.rate_scale - cur_rate) > rate_eps) {
-                  ts->SetRate(v.rate_scale);
-                  reset = true;
-                }
-              }
-              if ((v.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U) {
-                double cur = ts->NowUnix();
-                double abs_thresh = std::max(0, step_ms) / 1000.0;
-                if (std::abs(v.abs_unix_s - cur) >= abs_thresh) {
-                  ts->SetAbsolute(v.abs_unix_s);
-                  reset = true;
-                  // Allow a single backward jump immediately after a step
-                  allow_backward_once.store(true, std::memory_order_relaxed);
-                }
-              }
-            }
-            if (reset) {
-              std::lock_guard<std::mutex> lk(est_mtx);
-              offsets_.clear();
-              times_.clear();
-              offset_applied_s.store(0.0, std::memory_order_relaxed);
-              offset_target_s = 0.0;
-            }
-          }
-        }
-      }
-    }
+    ApplyVendorHintFromRx(rx);
   }
   double T2 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
   double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
@@ -358,6 +312,59 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
   *out_offset_s = offset;
   *out_rtt_ms = static_cast<int>(std::max(0.0, delay) * 1000.0 + 0.5);
   return true;
+}
+
+void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
+    const std::vector<uint8_t>& rx) {
+  if (rx.size() <= sizeof(NtpPacket)) return;
+  const uint8_t* p = rx.data() + sizeof(NtpPacket);
+  size_t remain = rx.size() - sizeof(NtpPacket);
+  if (remain < 4U) return;
+  uint16_t typ = static_cast<uint16_t>((p[0] << 8) | p[1]);
+  uint16_t len = static_cast<uint16_t>((p[2] << 8) | p[3]);
+  if (typ != ntpserver::NtpVendorExt::kEfTypeVendorHint || len < 4U ||
+      len > remain)
+    return;
+  std::vector<uint8_t> val(p + 4, p + len);
+  ntpserver::NtpVendorExt::Payload v{};
+  if (!ntpserver::NtpVendorExt::Parse(val, &v)) return;
+  if (v.seq <= last_ctrl_seq) return;  // dedupe stale/duplicate
+  last_ctrl_seq = v.seq;
+
+  bool reset = false;
+  ntpserver::TimeSource* ts = nullptr;
+  int step_ms = 0;
+  {
+    std::lock_guard<std::mutex> lk(opts_mtx);
+    ts = opts.TimeSourcePtr();
+    step_ms = opts.StepThresholdMs();
+  }
+  if (ts == nullptr) return;
+
+  const double rate_eps = 1e-12;  // ~1e-6 ppm
+  if ((v.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U) {
+    double cur_rate = ts->GetRate();
+    if (std::abs(v.rate_scale - cur_rate) > rate_eps) {
+      ts->SetRate(v.rate_scale);
+      reset = true;
+    }
+  }
+  if ((v.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U) {
+    double cur = ts->NowUnix();
+    double abs_thresh = std::max(0, step_ms) / 1000.0;
+    if (std::abs(v.abs_unix_s - cur) >= abs_thresh) {
+      ts->SetAbsolute(v.abs_unix_s);
+      reset = true;
+      allow_backward_once.store(true, std::memory_order_relaxed);
+    }
+  }
+  if (reset) {
+    std::lock_guard<std::mutex> lk(est_mtx);
+    offsets_.clear();
+    times_.clear();
+    offset_applied_s.store(0.0, std::memory_order_relaxed);
+    offset_target_s = 0.0;
+  }
 }
 
 void ntpclock::ClockService::Impl::Loop() {
