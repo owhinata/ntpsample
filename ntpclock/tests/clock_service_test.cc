@@ -14,6 +14,7 @@
 
 #include "ntpclock/clock_service.hpp"
 #include "ntpserver/ntp_server.hpp"
+#include "ntpserver/qpc_clock.hpp"
 
 using ntpclock::ClockService;
 using ntpclock::Options;

@@ -90,21 +90,16 @@ class NtpClient {
    *
    * Sends an NTP client request to the specified server, receives the
    * response, computes offset and RTT, and returns raw response bytes
-   * for extension field processing.
+   * for extension field processing by the caller.
    *
    * @param ip Server IPv4 address (numeric string, no DNS).
    * @param port Server UDP port.
    * @param get_timestamp Callback to get current time (UNIX seconds).
    *                      Called twice: before send (T1) and after receive (T4).
-   * @param on_response_received Optional callback invoked after receiving
-   *                             response with raw bytes (for vendor hints).
    * @return Result containing success status, offset, RTT, raw bytes, and error.
    */
-  static Result Exchange(
-      const std::string& ip, uint16_t port,
-      std::function<double()> get_timestamp,
-      std::function<void(const std::vector<uint8_t>&)> on_response_received =
-          nullptr) {
+  static Result Exchange(const std::string& ip, uint16_t port,
+                         std::function<double()> get_timestamp) {
     Result result{false, 0.0, 0, {}, ""};
 
     WSADATA wsa{};
@@ -171,13 +166,7 @@ class NtpClient {
 
     NtpPacket resp{};
     std::memcpy(&resp, rx.data(), sizeof(resp));
-
-    if (recvd > static_cast<int>(sizeof(NtpPacket))) {
-      rx.resize(recvd);
-      if (on_response_received) {
-        on_response_received(rx);
-      }
-    }
+    rx.resize(recvd);
 
     double T2 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
     double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));

@@ -164,12 +164,6 @@ class ClockService {
    */
   double NowUnix() const;
 
-  /**
-   * @brief Return currently applied offset in seconds.
-   * Positive means local time runs ahead of server.
-   */
-  double OffsetSeconds() const;
-
   Status GetStatus() const;
   Options GetOptions() const;
   /**

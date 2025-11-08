@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "internal/clock_corrector.hpp"
@@ -157,7 +158,8 @@ struct ntpclock::ClockService::Impl {
   internal::StepInhibitor step_inhibitor;
 
   // Networking
-  bool UdpExchange(double* out_offset_s, int* out_rtt_ms, std::string* err);
+  bool UdpExchange(double* out_offset_s, int* out_rtt_ms,
+                   std::vector<uint8_t>* out_response, std::string* err);
 
   /**
    * @brief Parse NTP vendor extension from a received datagram and apply.
@@ -214,19 +216,14 @@ struct NtpPacket {
 #pragma pack(pop)
 }  // namespace
 
-bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
-                                               int* out_rtt_ms,
-                                               std::string* err) {
+bool ntpclock::ClockService::Impl::UdpExchange(
+    double* out_offset_s, int* out_rtt_ms, std::vector<uint8_t>* out_response,
+    std::string* err) {
   auto get_timestamp = [this]() {
     return time_source ? time_source->NowUnix() : 0.0;
   };
 
-  auto on_response = [this](const std::vector<uint8_t>& rx) {
-    ApplyVendorHintFromRx(rx);
-  };
-
-  auto result =
-      internal::NtpClient::Exchange(ip, port, get_timestamp, on_response);
+  auto result = internal::NtpClient::Exchange(ip, port, get_timestamp);
 
   if (!result.success) {
     if (err) *err = result.error;
@@ -235,6 +232,7 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
 
   *out_offset_s = result.offset_s;
   *out_rtt_ms = result.rtt_ms;
+  *out_response = std::move(result.response_bytes);
   return true;
 }
 
@@ -363,8 +361,14 @@ void ntpclock::ClockService::Impl::Loop() {
     // 2. Acquire NTP sample
     double sample_offset_s = 0.0;
     int sample_rtt_ms = 0;
+    std::vector<uint8_t> response;
     std::string err;
-    bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &err);
+    bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &response, &err);
+
+    // 2a. Process vendor hint from response if available
+    if (ok && response.size() > sizeof(NtpPacket)) {
+      ApplyVendorHintFromRx(response);
+    }
 
     // 3. Initialize status structure
     Status st_local;
@@ -466,10 +470,6 @@ double ntpclock::ClockService::NowUnix() const {
 
   // ClockCorrector applies offset and enforces monotonicity
   return p_->clock_corrector.GetMonotonicTime(base);
-}
-
-double ntpclock::ClockService::OffsetSeconds() const {
-  return p_->offset_applied_s.load(std::memory_order_relaxed);
 }
 
 ntpclock::Status ntpclock::ClockService::GetStatus() const {

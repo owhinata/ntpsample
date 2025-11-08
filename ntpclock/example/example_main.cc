@@ -18,6 +18,7 @@
 #include <algorithm>
 
 #include "ntpclock/clock_service.hpp"
+#include "ntpserver/qpc_clock.hpp"
 #include <ctime>
 #include <sstream>
 #include <iomanip>
@@ -121,7 +122,7 @@ int main(int argc, char** argv) {
   HideCur();
   std::atexit(AtExitShowCur);
 
-  if (!svc.Start(ip, port, opt)) {
+  if (!svc.Start(&ntpserver::QpcClock::Instance(), ip, port, opt)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
