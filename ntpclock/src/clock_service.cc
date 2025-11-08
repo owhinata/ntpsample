@@ -160,24 +160,37 @@ struct ntpclock::ClockService::Impl {
                    std::vector<uint8_t>* out_response, std::string* err);
 
   /**
+   * @brief Result of vendor hint processing.
+   */
+  struct VendorHintResult {
+    bool applied = false;        ///< Whether any hint was applied
+    bool abs_applied = false;    ///< Whether SetAbsolute was applied
+    double step_amount_s = 0.0;  ///< Step amount (if abs_applied)
+    double timestamp = 0.0;      ///< Timestamp when applied
+  };
+
+  /**
    * @brief Parse NTP vendor extension from a received datagram and apply.
    *
    * @param rx Raw datagram bytes (NTP header + optional extension fields).
+   * @return VendorHintResult indicating what was applied and when.
    * @note Applies SetRate/SetAbsolute when payload differences are meaningful,
-   *       and resets estimator windows accordingly. Deduplicates by sequence.
+   *       and resets estimator windows accordingly. Does NOT update status.
    */
-  void ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
+  VendorHintResult ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
 
   // Worker and helper methods
   void Loop();
 
   /**
-   * @brief Handle the case when step corrections are inhibited.
+   * @brief Build status for inhibited state.
    *
-   * Updates status with current sample info but doesn't mutate estimators.
+   * Constructs Status with current sample info but no estimator updates.
+   * Used when step corrections are inhibited (vendor hints settling).
    */
-  void HandleInhibitedState(const Options& snapshot, double sample_offset_s,
-                            int sample_rtt_ms, double tnow, int good_samples);
+  Status BuildInhibitedStatus(const Options& snapshot, double sample_offset_s,
+                              int sample_rtt_ms, double tnow, int good_samples,
+                              const VendorHintResult& hint_result);
 
   /**
    * @brief Update estimators and compute target offset from valid sample.
@@ -188,12 +201,13 @@ struct ntpclock::ClockService::Impl {
       const Options& snapshot, double sample_offset_s, double tnow);
 
   /**
-   * @brief Populate status structure after successful sample processing.
+   * @brief Build status for successful sample processing.
    */
-  void PopulateSuccessStatus(Status* st, const Options& snapshot, double tnow,
-                             int good_samples, double median, double omin,
-                             double omax, Status::Correction correction,
-                             double correction_amount);
+  Status BuildSuccessStatus(const Options& snapshot, double sample_offset_s,
+                            int sample_rtt_ms, double tnow, int good_samples,
+                            double median, double omin, double omax,
+                            Status::Correction correction,
+                            double correction_amount);
 };
 
 namespace {
@@ -234,10 +248,13 @@ bool ntpclock::ClockService::Impl::UdpExchange(
   return true;
 }
 
-void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
+ntpclock::ClockService::Impl::VendorHintResult
+ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
     const std::vector<uint8_t>& rx) {
+  VendorHintResult hint_result;
+
   auto ts = time_source;
-  if (!ts) return;
+  if (!ts) return hint_result;
 
   // Get options snapshot
   double step_threshold_s = 0.0;
@@ -252,7 +269,7 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
   auto result = vendor_hint_processor.ProcessAndApply(
       rx, sizeof(NtpPacket), ts, step_threshold_s, poll_interval_s);
 
-  // If reset is needed, clear estimator state and update status
+  // If reset is needed, clear estimator state
   if (result.reset_needed) {
     estimator_state.Clear();
 
@@ -262,34 +279,42 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
       offset_target_s = 0.0;
     }
 
-    // If absolute time was set, allow backward jump and update status
+    // If absolute time was set, allow backward jump
     if (result.abs_applied) {
       clock_corrector.AllowBackwardOnce();
-
-      double now = ts->NowUnix();
-      std::lock_guard<std::mutex> lk2(status_mtx);
-      status.last_correction = Status::Correction::Step;
-      status.last_correction_amount_s = result.step_amount_s;
-      status.last_update_unix_s = now;
-      status.window_count = 0;
-      status.offset_applied_s = 0.0;
-      status.offset_target_s = 0.0;
+      hint_result.applied = true;
+      hint_result.abs_applied = true;
+      hint_result.step_amount_s = result.step_amount_s;
+      hint_result.timestamp = ts->NowUnix();
+    } else {
+      hint_result.applied = true;
     }
   }
+
+  return hint_result;
 }
 
-void ntpclock::ClockService::Impl::HandleInhibitedState(const Options& snapshot,
-                                                        double sample_offset_s,
-                                                        int sample_rtt_ms,
-                                                        double tnow,
-                                                        int good_samples) {
-  std::lock_guard<std::mutex> lk(status_mtx);
-  status.synchronized = (good_samples >= snapshot.MinSamplesToLock());
-  status.rtt_ms = sample_rtt_ms;
-  status.last_delay_s = sample_rtt_ms / 1000.0;
-  status.offset_s = sample_offset_s;
-  status.last_update_unix_s = tnow;
-  status.last_error.clear();
+ntpclock::Status ntpclock::ClockService::Impl::BuildInhibitedStatus(
+    const Options& snapshot, double sample_offset_s, int sample_rtt_ms,
+    double tnow, int good_samples, const VendorHintResult& hint_result) {
+  Status st;
+  st.synchronized = (good_samples >= snapshot.MinSamplesToLock());
+  st.rtt_ms = sample_rtt_ms;
+  st.last_delay_s = sample_rtt_ms / 1000.0;
+  st.offset_s = sample_offset_s;
+  st.last_update_unix_s = tnow;
+  st.last_error.clear();
+
+  // Include vendor hint step correction if applied
+  if (hint_result.abs_applied) {
+    st.last_correction = Status::Correction::Step;
+    st.last_correction_amount_s = hint_result.step_amount_s;
+    st.window_count = 0;
+    st.offset_applied_s = 0.0;
+    st.offset_target_s = 0.0;
+  }
+
+  return st;
 }
 
 std::tuple<double, double, double>
@@ -315,28 +340,35 @@ ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
   return std::make_tuple(median, omin, omax);
 }
 
-void ntpclock::ClockService::Impl::PopulateSuccessStatus(
-    Status* st, const Options& snapshot, double tnow, int good_samples,
-    double median, double omin, double omax, Status::Correction correction,
-    double correction_amount) {
-  st->synchronized = (good_samples >= snapshot.MinSamplesToLock());
-  st->last_update_unix_s = tnow;
-  st->skew_ppm = estimator_state.ComputeSkewPpm(snapshot.SkewWindow());
-  st->samples = good_samples;
-  st->offset_window = snapshot.OffsetWindow();
-  st->skew_window = snapshot.SkewWindow();
-  st->window_count = estimator_state.GetSampleCount();
-  st->offset_median_s = median;
-  st->offset_min_s = omin;
-  st->offset_max_s = omax;
-  st->offset_applied_s = offset_applied_s.load(std::memory_order_relaxed);
-  st->last_correction = correction;
-  st->last_correction_amount_s = correction_amount;
+ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
+    const Options& snapshot, double sample_offset_s, int sample_rtt_ms,
+    double tnow, int good_samples, double median, double omin, double omax,
+    Status::Correction correction, double correction_amount) {
+  Status st;
+  st.synchronized = (good_samples >= snapshot.MinSamplesToLock());
+  st.rtt_ms = sample_rtt_ms;
+  st.last_delay_s = sample_rtt_ms / 1000.0;
+  st.offset_s = sample_offset_s;
+  st.last_update_unix_s = tnow;
+  st.skew_ppm = estimator_state.ComputeSkewPpm(snapshot.SkewWindow());
+  st.samples = good_samples;
+  st.offset_window = snapshot.OffsetWindow();
+  st.skew_window = snapshot.SkewWindow();
+  st.window_count = estimator_state.GetSampleCount();
+  st.offset_median_s = median;
+  st.offset_min_s = omin;
+  st.offset_max_s = omax;
+  st.offset_applied_s = offset_applied_s.load(std::memory_order_relaxed);
+  st.last_correction = correction;
+  st.last_correction_amount_s = correction_amount;
+  st.last_error.clear();
 
   {
     std::lock_guard<std::mutex> lk(est_mtx);
-    st->offset_target_s = offset_target_s;
+    st.offset_target_s = offset_target_s;
   }
+
+  return st;
 }
 
 void ntpclock::ClockService::Impl::Loop() {
@@ -361,42 +393,26 @@ void ntpclock::ClockService::Impl::Loop() {
     bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &response, &err);
 
     // 2a. Process vendor hint from response if available
+    VendorHintResult hint_result;
     if (ok && response.size() > sizeof(NtpPacket)) {
-      ApplyVendorHintFromRx(response);
+      hint_result = ApplyVendorHintFromRx(response);
     }
 
-    // 2b. Early exit if step corrections are inhibited
-    if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
-      double tnow = time_source ? time_source->NowUnix() : 0.0;
-      if (vendor_hint_processor.IsStepInhibited(tnow)) {
-        HandleInhibitedState(snapshot, sample_offset_s, sample_rtt_ms, tnow,
-                             good_samples);
-        std::this_thread::sleep_for(milliseconds(poll_interval_ms));
-        continue;
-      }
-    }
-
-    // 3. Initialize status structure
+    // 3. Build status based on sample validity and inhibition state
     Status st_local;
-    st_local.last_error.clear();
-    st_local.rtt_ms = sample_rtt_ms;
-    st_local.last_delay_s = sample_rtt_ms / 1000.0;
-    st_local.offset_s = sample_offset_s;
-    st_local.last_update_unix_s = 0.0;
-    st_local.samples = 0;
-    st_local.skew_ppm = 0.0;
-    st_local.last_correction = Status::Correction::None;
-    st_local.last_correction_amount_s = 0.0;
+    double tnow = time_source ? time_source->NowUnix() : 0.0;
+    bool is_inhibited =
+        hint_result.applied || vendor_hint_processor.IsStepInhibited(tnow);
 
-    // 4. Process sample if valid (and not inhibited)
-    if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
-      double tnow = time_source ? time_source->NowUnix() : 0.0;
-
-      // 4a. Update estimators and compute target offset
+    if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && is_inhibited) {
+      // Inhibited path: vendor hint applied or settling from previous hint
+      st_local = BuildInhibitedStatus(snapshot, sample_offset_s, sample_rtt_ms,
+                                      tnow, good_samples, hint_result);
+    } else if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
+      // Normal path: process sample and apply correction
       auto [median, omin, omax] =
           UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
 
-      // 4b. Decide and apply correction
       double applied = offset_applied_s.load(std::memory_order_relaxed);
       double target = 0.0;
       {
@@ -409,23 +425,26 @@ void ntpclock::ClockService::Impl::Loop() {
           applied, target, step_thresh_s, slew_rate_s_per_s,
           poll_interval_ms / 1000.0, &correction_amount);
 
-      // 4c. Populate success status
       good_samples++;
-      PopulateSuccessStatus(&st_local, snapshot, tnow, good_samples, median,
-                            omin, omax, correction, correction_amount);
+      st_local = BuildSuccessStatus(snapshot, sample_offset_s, sample_rtt_ms,
+                                    tnow, good_samples, median, omin, omax,
+                                    correction, correction_amount);
     } else {
-      // Sample acquisition failed or RTT exceeded threshold
+      // Error path: sample acquisition failed or RTT exceeded threshold
       st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
+      st_local.rtt_ms = sample_rtt_ms;
+      st_local.last_delay_s = sample_rtt_ms / 1000.0;
+      st_local.offset_s = sample_offset_s;
       st_local.last_error = err.empty() ? "sample rejected" : err;
     }
 
-    // 5. Update shared status
+    // 4. Update shared status (single location for all paths)
     {
       std::lock_guard<std::mutex> lk(status_mtx);
       status = st_local;
     }
 
-    // 6. Sleep until next poll
+    // 5. Sleep until next poll
     std::this_thread::sleep_for(milliseconds(poll_interval_ms));
   }
 }
