@@ -365,6 +365,17 @@ void ntpclock::ClockService::Impl::Loop() {
       ApplyVendorHintFromRx(response);
     }
 
+    // 2b. Early exit if step corrections are inhibited
+    if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
+      double tnow = time_source ? time_source->NowUnix() : 0.0;
+      if (vendor_hint_processor.IsStepInhibited(tnow)) {
+        HandleInhibitedState(snapshot, sample_offset_s, sample_rtt_ms, tnow,
+                             good_samples);
+        std::this_thread::sleep_for(milliseconds(poll_interval_ms));
+        continue;
+      }
+    }
+
     // 3. Initialize status structure
     Status st_local;
     st_local.last_error.clear();
@@ -377,23 +388,15 @@ void ntpclock::ClockService::Impl::Loop() {
     st_local.last_correction = Status::Correction::None;
     st_local.last_correction_amount_s = 0.0;
 
-    // 4. Process sample if valid
+    // 4. Process sample if valid (and not inhibited)
     if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
       double tnow = time_source ? time_source->NowUnix() : 0.0;
 
-      // 4a. Check if step corrections are temporarily inhibited
-      if (vendor_hint_processor.IsStepInhibited(tnow)) {
-        HandleInhibitedState(snapshot, sample_offset_s, sample_rtt_ms, tnow,
-                             good_samples);
-        std::this_thread::sleep_for(milliseconds(poll_interval_ms));
-        continue;
-      }
-
-      // 4b. Update estimators and compute target offset
+      // 4a. Update estimators and compute target offset
       auto [median, omin, omax] =
           UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
 
-      // 4c. Decide and apply correction
+      // 4b. Decide and apply correction
       double applied = offset_applied_s.load(std::memory_order_relaxed);
       double target = 0.0;
       {
@@ -406,7 +409,7 @@ void ntpclock::ClockService::Impl::Loop() {
           applied, target, step_thresh_s, slew_rate_s_per_s,
           poll_interval_ms / 1000.0, &correction_amount);
 
-      // 4d. Populate success status
+      // 4c. Populate success status
       good_samples++;
       PopulateSuccessStatus(&st_local, snapshot, tnow, good_samples, median,
                             omin, omax, correction, correction_amount);
