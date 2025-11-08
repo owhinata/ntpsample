@@ -46,7 +46,8 @@ TEST(ClockServiceTest, StartStopWithoutServer) {
   ClockService svc;
   auto opts = Options::Builder().PollIntervalMs(100).Build();
   // Start against a non-routable test net address: no crash expected.
-  svc.Start("203.0.113.1", 9123, opts);  // TEST-NET-3 per RFC 5737
+  svc.Start(&ntpserver::QpcClock::Instance(), "203.0.113.1", 9123,
+            opts);  // TEST-NET-3 per RFC 5737
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   (void)svc.NowUnix();
   svc.Stop();
@@ -92,6 +93,7 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
   // Server with time ahead by 50 ms
   double now = duration<double>(system_clock::now().time_since_epoch()).count();
   FakeTimeSource server_ts(now + 0.050);
+  FakeTimeSource client_ts(now);
 
   ntpserver::NtpServer server;
   server.SetTimeSource(&server_ts);
@@ -104,7 +106,7 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
                   .StepThresholdMs(200)
                   .MaxRttMs(200)
                   .Build();
-  ASSERT_TRUE(svc.Start("127.0.0.1", 29333, opts));
+  ASSERT_TRUE(svc.Start(&client_ts, "127.0.0.1", 29333, opts));
   std::this_thread::sleep_for(milliseconds(700));
 
   auto st = svc.GetStatus();
@@ -138,6 +140,8 @@ TEST(ClockServiceTest, StepAllowsBackwardOnce) {
   using namespace std::chrono;
   double now = duration<double>(system_clock::now().time_since_epoch()).count();
   FakeTimeSource server_ts(now);
+  FakeTimeSource client_ts(now);
+
   ntpserver::NtpServer server;
   server.SetTimeSource(&server_ts);
   ASSERT_TRUE(server.Start(29334));
@@ -149,7 +153,7 @@ TEST(ClockServiceTest, StepAllowsBackwardOnce) {
                   .StepThresholdMs(200)
                   .OffsetWindow(1)  // use latest sample for target
                   .Build();
-  ASSERT_TRUE(svc.Start("127.0.0.1", 29334, opts));
+  ASSERT_TRUE(svc.Start(&client_ts, "127.0.0.1", 29334, opts));
   std::this_thread::sleep_for(milliseconds(500));
 
   double last_now_before_step = svc.NowUnix();

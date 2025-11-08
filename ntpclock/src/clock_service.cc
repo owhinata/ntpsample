@@ -43,8 +43,7 @@ ntpclock::Options::Builder::Builder()
       max_rtt_ms_(100),
       min_samples_to_lock_(3),
       offset_window_(5),
-      skew_window_(20),
-      time_source_(nullptr) {}
+      skew_window_(20) {}
 
 ntpclock::Options::Builder::Builder(const Options& base)
     : poll_interval_ms_(base.PollIntervalMs()),
@@ -53,8 +52,7 @@ ntpclock::Options::Builder::Builder(const Options& base)
       max_rtt_ms_(base.MaxRttMs()),
       min_samples_to_lock_(base.MinSamplesToLock()),
       offset_window_(base.OffsetWindow()),
-      skew_window_(base.SkewWindow()),
-      time_source_(base.TimeSourcePtr()) {}
+      skew_window_(base.SkewWindow()) {}
 
 ntpclock::Options::Builder& ntpclock::Options::Builder::PollIntervalMs(int v) {
   poll_interval_ms_ = std::max(1, v);
@@ -93,24 +91,17 @@ ntpclock::Options::Builder& ntpclock::Options::Builder::SkewWindow(int v) {
   return *this;
 }
 
-ntpclock::Options::Builder& ntpclock::Options::Builder::TimeSource(
-    ntpserver::TimeSource* ts) {
-  time_source_ = ts;
-  return *this;
-}
-
 ntpclock::Options ntpclock::Options::Builder::Build() const {
-  return ntpclock::Options(
-      poll_interval_ms_, step_threshold_ms_, slew_rate_ms_per_s_, max_rtt_ms_,
-      min_samples_to_lock_, offset_window_, skew_window_, time_source_);
+  return ntpclock::Options(poll_interval_ms_, step_threshold_ms_,
+                           slew_rate_ms_per_s_, max_rtt_ms_,
+                           min_samples_to_lock_, offset_window_, skew_window_);
 }
 
 namespace ntpclock {
 std::ostream& operator<<(std::ostream& os, const Options& o) {
   os << "poll=" << o.PollIntervalMs() << "ms, step>=" << o.StepThresholdMs()
      << "ms, slew=" << o.SlewRateMsPerSec() << "ms/s, max_rtt=" << o.MaxRttMs()
-     << "ms, min_lock=" << o.MinSamplesToLock()
-     << ", ts=" << (o.TimeSourcePtr() ? "custom" : "<null>");
+     << "ms, min_lock=" << o.MinSamplesToLock();
   return os;
 }
 
@@ -141,6 +132,10 @@ std::ostream& operator<<(std::ostream& os, const Status& s) {
 struct ntpclock::ClockService::Impl {
   std::string ip;
   uint16_t port = 0;
+
+  // TimeSource is immutable during execution (set at Start, cleared at Stop)
+  ntpserver::TimeSource* time_source_ = nullptr;
+
   Options opts{Options::Builder().Build()};
   std::mutex opts_mtx;
 
@@ -234,8 +229,7 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
                                                int* out_rtt_ms,
                                                std::string* err) {
   auto get_timestamp = [this]() {
-    std::lock_guard<std::mutex> lk(opts_mtx);
-    return opts.TimeSourcePtr()->NowUnix();
+    return time_source_ ? time_source_->NowUnix() : 0.0;
   };
 
   auto on_response = [this](const std::vector<uint8_t>& rx) {
@@ -257,18 +251,17 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
 
 void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
     const std::vector<uint8_t>& rx) {
+  auto ts = time_source_;
+  if (!ts) return;
+
   // Get options snapshot
-  ntpserver::TimeSource* ts = nullptr;
   double step_threshold_s = 0.0;
   int poll_ms = 1000;
   {
     std::lock_guard<std::mutex> lk(opts_mtx);
-    ts = opts.TimeSourcePtr();
     step_threshold_s = opts.StepThresholdMs() / 1000.0;
     poll_ms = opts.PollIntervalMs();
   }
-
-  if (ts == nullptr) return;
 
   // Process vendor hints using extracted processor
   auto result = vendor_hint_processor_.ProcessAndApply(rx, sizeof(NtpPacket),
@@ -421,11 +414,7 @@ void ntpclock::ClockService::Impl::Loop() {
 
     // 4. Process sample if valid
     if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
-      double tnow = 0.0;
-      {
-        std::lock_guard<std::mutex> lk(opts_mtx);
-        tnow = opts.TimeSourcePtr()->NowUnix();
-      }
+      double tnow = time_source_ ? time_source_->NowUnix() : 0.0;
 
       // 4a. Check if step corrections are temporarily inhibited
       if (step_inhibitor_.IsInhibited(tnow)) {
@@ -479,20 +468,21 @@ void ntpclock::ClockService::Impl::Loop() {
 ntpclock::ClockService::ClockService() : p_(new Impl()) {}
 ntpclock::ClockService::~ClockService() { Stop(); }
 
-bool ntpclock::ClockService::Start(const std::string& ip, uint16_t port,
+bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
+                                   const std::string& ip, uint16_t port,
                                    const Options& opt) {
+  if (!time_source) return false;
+
   Stop();
   p_->ip = ip;
   p_->port = port;
-  // Ensure non-null time source (default to QpcClock::Instance()).
-  ntpserver::TimeSource* ts = opt.TimeSourcePtr()
-                                  ? opt.TimeSourcePtr()
-                                  : &ntpserver::QpcClock::Instance();
-  Options effective = Options::Builder(opt).TimeSource(ts).Build();
+  p_->time_source_ = time_source;
+
   {
     std::lock_guard<std::mutex> lk(p_->opts_mtx);
-    p_->opts = effective;
+    p_->opts = opt;
   }
+
   p_->running.store(true, std::memory_order_release);
   p_->thread = std::thread([this]() { p_->Loop(); });
   return true;
@@ -501,14 +491,14 @@ bool ntpclock::ClockService::Start(const std::string& ip, uint16_t port,
 void ntpclock::ClockService::Stop() {
   if (!p_->running.exchange(false)) return;
   if (p_->thread.joinable()) p_->thread.join();
+  p_->time_source_ = nullptr;
 }
 
 double ntpclock::ClockService::NowUnix() const {
-  double base = 0.0;
-  {
-    std::lock_guard<std::mutex> lk(p_->opts_mtx);
-    base = p_->opts.TimeSourcePtr()->NowUnix();
-  }
+  auto ts = p_->time_source_;
+  if (!ts) return 0.0;
+
+  double base = ts->NowUnix();
   double candidate =
       base + p_->offset_applied_s.load(std::memory_order_relaxed);
 

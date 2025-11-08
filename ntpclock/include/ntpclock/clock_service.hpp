@@ -52,8 +52,6 @@ class Options {
     Builder& OffsetWindow(int v);
     /** Number of samples for skew OLS window (default: 20). */
     Builder& SkewWindow(int v);
-    /** Set local time source (default: QpcClock::Instance()). */
-    Builder& TimeSource(ntpserver::TimeSource* ts);
 
     Options Build() const;
 
@@ -65,7 +63,6 @@ class Options {
     int min_samples_to_lock_;
     int offset_window_;
     int skew_window_;
-    ntpserver::TimeSource* time_source_;
   };
 
   /** @name Getters (immutable) */
@@ -77,7 +74,6 @@ class Options {
   int MinSamplesToLock() const { return min_samples_to_lock_; }
   int OffsetWindow() const { return offset_window_; }
   int SkewWindow() const { return skew_window_; }
-  ntpserver::TimeSource* TimeSourcePtr() const { return time_source_; }
   ///@}
 
   /** Stream formatter for logging. */
@@ -86,16 +82,14 @@ class Options {
  private:
   // Private ctor for Builder
   Options(int poll_ms, int step_ms, double slew_ms_per_s, int max_rtt_ms,
-          int min_samples, int offset_window, int skew_window,
-          ntpserver::TimeSource* ts)
+          int min_samples, int offset_window, int skew_window)
       : poll_interval_ms_(poll_ms),
         step_threshold_ms_(step_ms),
         slew_rate_ms_per_s_(slew_ms_per_s),
         max_rtt_ms_(max_rtt_ms),
         min_samples_to_lock_(min_samples),
         offset_window_(offset_window),
-        skew_window_(skew_window),
-        time_source_(ts) {}
+        skew_window_(skew_window) {}
 
   int poll_interval_ms_;
   int step_threshold_ms_;
@@ -104,7 +98,6 @@ class Options {
   int min_samples_to_lock_;
   int offset_window_;
   int skew_window_;
-  ntpserver::TimeSource* time_source_;
 };
 
 /**
@@ -154,12 +147,14 @@ class ClockService {
 
   /**
    * @brief Start background synchronization.
+   * @param time_source Local time source (must remain valid until Stop).
    * @param ip  IPv4 address in numeric form (no DNS).
    * @param port UDP port of the server.
    * @param opt  Immutable options snapshot.
-   * @return true if worker thread started.
+   * @return true if worker thread started, false if time_source is null.
    */
-  bool Start(const std::string& ip, uint16_t port, const Options& opt);
+  bool Start(ntpserver::TimeSource* time_source, const std::string& ip,
+             uint16_t port, const Options& opt);
   void Stop();
 
   /**
