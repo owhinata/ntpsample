@@ -134,7 +134,7 @@ struct ntpclock::ClockService::Impl {
   uint16_t port = 0;
 
   // TimeSource is immutable during execution (set at Start, cleared at Stop)
-  ntpserver::TimeSource* time_source_ = nullptr;
+  ntpserver::TimeSource* time_source = nullptr;
 
   Options opts{Options::Builder().Build()};
   std::mutex opts_mtx;
@@ -152,11 +152,11 @@ struct ntpclock::ClockService::Impl {
   std::mutex status_mtx;
 
   // Extracted components (SRP)
-  internal::MonotonicityGuard monotonicity_guard_;
-  internal::VendorHintProcessor vendor_hint_processor_;
-  internal::SyncEstimatorState estimator_state_;
-  internal::ClockCorrectionPolicy correction_policy_;
-  internal::StepInhibitor step_inhibitor_;
+  internal::MonotonicityGuard monotonicity_guard;
+  internal::VendorHintProcessor vendor_hint_processor;
+  internal::SyncEstimatorState estimator_state;
+  internal::ClockCorrectionPolicy correction_policy;
+  internal::StepInhibitor step_inhibitor;
 
   // Networking
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms, std::string* err);
@@ -229,7 +229,7 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
                                                int* out_rtt_ms,
                                                std::string* err) {
   auto get_timestamp = [this]() {
-    return time_source_ ? time_source_->NowUnix() : 0.0;
+    return time_source ? time_source->NowUnix() : 0.0;
   };
 
   auto on_response = [this](const std::vector<uint8_t>& rx) {
@@ -251,7 +251,7 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
 
 void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
     const std::vector<uint8_t>& rx) {
-  auto ts = time_source_;
+  auto ts = time_source;
   if (!ts) return;
 
   // Get options snapshot
@@ -264,12 +264,12 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
   }
 
   // Process vendor hints using extracted processor
-  auto result = vendor_hint_processor_.ProcessAndApply(rx, sizeof(NtpPacket),
-                                                       ts, step_threshold_s);
+  auto result = vendor_hint_processor.ProcessAndApply(rx, sizeof(NtpPacket), ts,
+                                                      step_threshold_s);
 
   // If reset is needed, clear estimator state and update status
   if (result.reset_needed) {
-    estimator_state_.Clear();
+    estimator_state.Clear();
 
     {
       std::lock_guard<std::mutex> lk(est_mtx);
@@ -279,11 +279,11 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
 
     // Inhibit NTP step once: skip step decisions for ~1 poll interval
     double now = ts->NowUnix();
-    step_inhibitor_.InhibitUntil(now + (poll_ms / 1000.0));
+    step_inhibitor.InhibitUntil(now + (poll_ms / 1000.0));
 
     // If absolute time was set, allow backward jump and update status
     if (result.abs_applied) {
-      monotonicity_guard_.AllowBackwardOnce();
+      monotonicity_guard.AllowBackwardOnce();
 
       std::lock_guard<std::mutex> lk2(status_mtx);
       status.last_correction = Status::Correction::Step;
@@ -316,11 +316,11 @@ ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
                                                         double tnow) {
   // Add sample to sliding window
   int maxw = std::max(snapshot.OffsetWindow(), snapshot.SkewWindow());
-  estimator_state_.AddSample(sample_offset_s, tnow, maxw);
+  estimator_state.AddSample(sample_offset_s, tnow, maxw);
 
   // Compute robust target: median of last window, and min/max for debug
-  auto stats = estimator_state_.ComputeOffsetStats(snapshot.OffsetWindow(),
-                                                   sample_offset_s);
+  auto stats = estimator_state.ComputeOffsetStats(snapshot.OffsetWindow(),
+                                                  sample_offset_s);
   double median = stats.median;
   double omin = stats.min;
   double omax = stats.max;
@@ -344,7 +344,7 @@ ntpclock::ClockService::Impl::ApplyCorrectionDecision(
     // Step correction (may jump backwards)
     offset_applied_s.store(applied + decision.amount_s,
                            std::memory_order_relaxed);
-    monotonicity_guard_.AllowBackwardOnce();
+    monotonicity_guard.AllowBackwardOnce();
     return Status::Correction::Step;
   } else if (decision.type == internal::ClockCorrectionPolicy::Type::Slew) {
     // Slew correction (bounded rate)
@@ -362,11 +362,11 @@ void ntpclock::ClockService::Impl::PopulateSuccessStatus(
     double correction_amount) {
   st->synchronized = (good_samples >= snapshot.MinSamplesToLock());
   st->last_update_unix_s = tnow;
-  st->skew_ppm = estimator_state_.ComputeSkewPpm(snapshot.SkewWindow());
+  st->skew_ppm = estimator_state.ComputeSkewPpm(snapshot.SkewWindow());
   st->samples = good_samples;
   st->offset_window = snapshot.OffsetWindow();
   st->skew_window = snapshot.SkewWindow();
-  st->window_count = estimator_state_.GetSampleCount();
+  st->window_count = estimator_state.GetSampleCount();
   st->offset_median_s = median;
   st->offset_min_s = omin;
   st->offset_max_s = omax;
@@ -414,10 +414,10 @@ void ntpclock::ClockService::Impl::Loop() {
 
     // 4. Process sample if valid
     if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
-      double tnow = time_source_ ? time_source_->NowUnix() : 0.0;
+      double tnow = time_source ? time_source->NowUnix() : 0.0;
 
       // 4a. Check if step corrections are temporarily inhibited
-      if (step_inhibitor_.IsInhibited(tnow)) {
+      if (step_inhibitor.IsInhibited(tnow)) {
         HandleInhibitedState(snapshot, sample_offset_s, sample_rtt_ms, tnow,
                              good_samples);
         std::this_thread::sleep_for(milliseconds(poll_interval_ms));
@@ -436,7 +436,7 @@ void ntpclock::ClockService::Impl::Loop() {
         delta = offset_target_s - applied;
       }
 
-      auto decision = correction_policy_.Decide(
+      auto decision = correction_policy.Decide(
           delta, step_thresh_s, slew_rate_s_per_s, poll_interval_ms / 1000.0);
 
       double correction_amount = 0.0;
@@ -476,7 +476,7 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   Stop();
   p_->ip = ip;
   p_->port = port;
-  p_->time_source_ = time_source;
+  p_->time_source = time_source;
 
   {
     std::lock_guard<std::mutex> lk(p_->opts_mtx);
@@ -491,11 +491,11 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
 void ntpclock::ClockService::Stop() {
   if (!p_->running.exchange(false)) return;
   if (p_->thread.joinable()) p_->thread.join();
-  p_->time_source_ = nullptr;
+  p_->time_source = nullptr;
 }
 
 double ntpclock::ClockService::NowUnix() const {
-  auto ts = p_->time_source_;
+  auto ts = p_->time_source;
   if (!ts) return 0.0;
 
   double base = ts->NowUnix();
@@ -503,7 +503,7 @@ double ntpclock::ClockService::NowUnix() const {
       base + p_->offset_applied_s.load(std::memory_order_relaxed);
 
   // Enforce monotonicity using the extracted guard
-  return p_->monotonicity_guard_.EnforceMonotonic(candidate);
+  return p_->monotonicity_guard.EnforceMonotonic(candidate);
 }
 
 double ntpclock::ClockService::OffsetSeconds() const {
