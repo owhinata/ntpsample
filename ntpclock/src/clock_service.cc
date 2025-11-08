@@ -22,8 +22,7 @@
 #include <tuple>
 #include <vector>
 
-#include "internal/clock_correction_policy.hpp"
-#include "internal/monotonicity_guard.hpp"
+#include "internal/clock_corrector.hpp"
 #include "internal/ntp_client.hpp"
 #include "internal/offset_estimator.hpp"
 #include "internal/skew_estimator.hpp"
@@ -152,10 +151,9 @@ struct ntpclock::ClockService::Impl {
   std::mutex status_mtx;
 
   // Extracted components (SRP)
-  internal::MonotonicityGuard monotonicity_guard;
+  internal::ClockCorrector clock_corrector{&offset_applied_s};
   internal::VendorHintProcessor vendor_hint_processor;
   internal::SyncEstimatorState estimator_state;
-  internal::ClockCorrectionPolicy correction_policy;
   internal::StepInhibitor step_inhibitor;
 
   // Networking
@@ -188,15 +186,6 @@ struct ntpclock::ClockService::Impl {
    */
   std::tuple<double, double, double> UpdateEstimatorsAndTarget(
       const Options& snapshot, double sample_offset_s, double tnow);
-
-  /**
-   * @brief Apply correction based on policy decision.
-   *
-   * @return The correction type applied (for status reporting).
-   */
-  Status::Correction ApplyCorrectionDecision(
-      const internal::ClockCorrectionPolicy::Decision& decision,
-      double* out_amount_s);
 
   /**
    * @brief Populate status structure after successful sample processing.
@@ -283,7 +272,7 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
 
     // If absolute time was set, allow backward jump and update status
     if (result.abs_applied) {
-      monotonicity_guard.AllowBackwardOnce();
+      clock_corrector.AllowBackwardOnce();
 
       std::lock_guard<std::mutex> lk2(status_mtx);
       status.last_correction = Status::Correction::Step;
@@ -331,29 +320,6 @@ ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
   }
 
   return std::make_tuple(median, omin, omax);
-}
-
-ntpclock::Status::Correction
-ntpclock::ClockService::Impl::ApplyCorrectionDecision(
-    const internal::ClockCorrectionPolicy::Decision& decision,
-    double* out_amount_s) {
-  double applied = offset_applied_s.load(std::memory_order_relaxed);
-  *out_amount_s = decision.amount_s;
-
-  if (decision.type == internal::ClockCorrectionPolicy::Type::Step) {
-    // Step correction (may jump backwards)
-    offset_applied_s.store(applied + decision.amount_s,
-                           std::memory_order_relaxed);
-    monotonicity_guard.AllowBackwardOnce();
-    return Status::Correction::Step;
-  } else if (decision.type == internal::ClockCorrectionPolicy::Type::Slew) {
-    // Slew correction (bounded rate)
-    offset_applied_s.store(applied + decision.amount_s,
-                           std::memory_order_relaxed);
-    return Status::Correction::Slew;
-  }
-
-  return Status::Correction::None;
 }
 
 void ntpclock::ClockService::Impl::PopulateSuccessStatus(
@@ -429,19 +395,17 @@ void ntpclock::ClockService::Impl::Loop() {
           UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
 
       // 4c. Decide and apply correction
-      double delta = 0.0;
+      double applied = offset_applied_s.load(std::memory_order_relaxed);
+      double target = 0.0;
       {
         std::lock_guard<std::mutex> lk(est_mtx);
-        double applied = offset_applied_s.load(std::memory_order_relaxed);
-        delta = offset_target_s - applied;
+        target = offset_target_s;
       }
 
-      auto decision = correction_policy.Decide(
-          delta, step_thresh_s, slew_rate_s_per_s, poll_interval_ms / 1000.0);
-
       double correction_amount = 0.0;
-      Status::Correction correction =
-          ApplyCorrectionDecision(decision, &correction_amount);
+      Status::Correction correction = clock_corrector.Apply(
+          applied, target, step_thresh_s, slew_rate_s_per_s,
+          poll_interval_ms / 1000.0, &correction_amount);
 
       // 4d. Populate success status
       good_samples++;
@@ -499,11 +463,9 @@ double ntpclock::ClockService::NowUnix() const {
   if (!ts) return 0.0;
 
   double base = ts->NowUnix();
-  double candidate =
-      base + p_->offset_applied_s.load(std::memory_order_relaxed);
 
-  // Enforce monotonicity using the extracted guard
-  return p_->monotonicity_guard.EnforceMonotonic(candidate);
+  // ClockCorrector applies offset and enforces monotonicity
+  return p_->clock_corrector.GetMonotonicTime(base);
 }
 
 double ntpclock::ClockService::OffsetSeconds() const {
