@@ -19,11 +19,17 @@
 #include <numeric>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
+#include "internal/clock_correction_policy.hpp"
+#include "internal/monotonicity_guard.hpp"
 #include "internal/ntp_client.hpp"
 #include "internal/offset_estimator.hpp"
 #include "internal/skew_estimator.hpp"
+#include "internal/step_inhibitor.hpp"
+#include "internal/sync_estimator_state.hpp"
+#include "internal/vendor_hint_processor.hpp"
 #include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
@@ -150,16 +156,15 @@ struct ntpclock::ClockService::Impl {
   Status status{};
   std::mutex status_mtx;
 
-  // Monotonicity controls
-  std::atomic<double> last_now_returned_s{0.0};
-  std::atomic<bool> allow_backward_once{false};
-  // After applying a vendor ABS/RATE hint, temporarily inhibit NTP step to
-  // avoid double-application (EF step + NTP step in same cycle).
-  std::atomic<double> inhibit_step_until_s{0.0};
+  // Extracted components (SRP)
+  internal::MonotonicityGuard monotonicity_guard_;
+  internal::VendorHintProcessor vendor_hint_processor_;
+  internal::SyncEstimatorState estimator_state_;
+  internal::ClockCorrectionPolicy correction_policy_;
+  internal::StepInhibitor step_inhibitor_;
 
   // Networking
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms, std::string* err);
-  uint32_t last_ctrl_seq{0};
 
   /**
    * @brief Parse NTP vendor extension from a received datagram and apply.
@@ -170,12 +175,41 @@ struct ntpclock::ClockService::Impl {
    */
   void ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
 
-  // Worker
+  // Worker and helper methods
   void Loop();
 
-  // Simple estimators/storage
-  std::vector<double> offsets_;
-  std::vector<double> times_;
+  /**
+   * @brief Handle the case when step corrections are inhibited.
+   *
+   * Updates status with current sample info but doesn't mutate estimators.
+   */
+  void HandleInhibitedState(const Options& snapshot, double sample_offset_s,
+                            int sample_rtt_ms, double tnow, int good_samples);
+
+  /**
+   * @brief Update estimators and compute target offset from valid sample.
+   *
+   * @return Tuple of (median, min, max) offset statistics.
+   */
+  std::tuple<double, double, double> UpdateEstimatorsAndTarget(
+      const Options& snapshot, double sample_offset_s, double tnow);
+
+  /**
+   * @brief Apply correction based on policy decision.
+   *
+   * @return The correction type applied (for status reporting).
+   */
+  Status::Correction ApplyCorrectionDecision(
+      const internal::ClockCorrectionPolicy::Decision& decision,
+      double* out_amount_s);
+
+  /**
+   * @brief Populate status structure after successful sample processing.
+   */
+  void PopulateSuccessStatus(Status* st, const Options& snapshot, double tnow,
+                             int good_samples, double median, double omin,
+                             double omax, Status::Correction correction,
+                             double correction_amount);
 };
 
 namespace {
@@ -223,72 +257,44 @@ bool ntpclock::ClockService::Impl::UdpExchange(double* out_offset_s,
 
 void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
     const std::vector<uint8_t>& rx) {
-  if (rx.size() <= sizeof(NtpPacket)) return;
-  const uint8_t* p = rx.data() + sizeof(NtpPacket);
-  size_t remain = rx.size() - sizeof(NtpPacket);
-  if (remain < 4U) return;
-  uint16_t typ = static_cast<uint16_t>((p[0] << 8) | p[1]);
-  uint16_t len = static_cast<uint16_t>((p[2] << 8) | p[3]);
-  if (typ != ntpserver::NtpVendorExt::kEfTypeVendorHint || len < 4U ||
-      len > remain)
-    return;
-  std::vector<uint8_t> val(p + 4, p + len);
-  ntpserver::NtpVendorExt::Payload v{};
-  if (!ntpserver::NtpVendorExt::Parse(val, &v)) return;
-  if (v.seq <= last_ctrl_seq) return;  // dedupe stale/duplicate
-  last_ctrl_seq = v.seq;
-
-  bool reset = false;
-  bool did_abs = false;
-  double step_amount = 0.0;
+  // Get options snapshot
   ntpserver::TimeSource* ts = nullptr;
-  int step_ms = 0;
-
+  double step_threshold_s = 0.0;
   int poll_ms = 1000;
   {
     std::lock_guard<std::mutex> lk(opts_mtx);
     ts = opts.TimeSourcePtr();
-    step_ms = opts.StepThresholdMs();
-
+    step_threshold_s = opts.StepThresholdMs() / 1000.0;
     poll_ms = opts.PollIntervalMs();
   }
+
   if (ts == nullptr) return;
 
-  const double rate_eps = 1e-12;  // ~1e-6 ppm
-  if ((v.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U) {
-    double cur_rate = ts->GetRate();
-    if (std::abs(v.rate_scale - cur_rate) > rate_eps) {
-      ts->SetRate(v.rate_scale);
-      reset = true;
-    }
-  }
-  if ((v.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U) {
-    double cur = ts->NowUnix();
-    double abs_thresh = std::max(0, step_ms) / 1000.0;
-    if (std::abs(v.abs_unix_s - cur) >= abs_thresh) {
-      ts->SetAbsolute(v.abs_unix_s);
-      reset = true;
-      did_abs = true;
-      step_amount = v.abs_unix_s - cur;
-      allow_backward_once.store(true, std::memory_order_relaxed);
-    }
-  }
+  // Process vendor hints using extracted processor
+  auto result = vendor_hint_processor_.ProcessAndApply(rx, sizeof(NtpPacket),
+                                                       ts, step_threshold_s);
 
-  if (reset) {
-    std::lock_guard<std::mutex> lk(est_mtx);
-    offsets_.clear();
-    times_.clear();
-    offset_applied_s.store(0.0, std::memory_order_relaxed);
-    offset_target_s = 0.0;
-    // Inhibit NTP step once: skip step decisions for ~1 poll interval.
+  // If reset is needed, clear estimator state and update status
+  if (result.reset_needed) {
+    estimator_state_.Clear();
+
+    {
+      std::lock_guard<std::mutex> lk(est_mtx);
+      offset_applied_s.store(0.0, std::memory_order_relaxed);
+      offset_target_s = 0.0;
+    }
+
+    // Inhibit NTP step once: skip step decisions for ~1 poll interval
     double now = ts->NowUnix();
-    inhibit_step_until_s.store(now + (poll_ms / 1000.0),
-                               std::memory_order_relaxed);
-    // Reflect the step in Status immediately so observers can detect it.
-    if (did_abs) {
+    step_inhibitor_.InhibitUntil(now + (poll_ms / 1000.0));
+
+    // If absolute time was set, allow backward jump and update status
+    if (result.abs_applied) {
+      monotonicity_guard_.AllowBackwardOnce();
+
       std::lock_guard<std::mutex> lk2(status_mtx);
       status.last_correction = Status::Correction::Step;
-      status.last_correction_amount_s = step_amount;
+      status.last_correction_amount_s = result.step_amount_s;
       status.last_update_unix_s = now;
       status.window_count = 0;
       status.offset_applied_s = 0.0;
@@ -297,11 +303,96 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
   }
 }
 
+void ntpclock::ClockService::Impl::HandleInhibitedState(const Options& snapshot,
+                                                        double sample_offset_s,
+                                                        int sample_rtt_ms,
+                                                        double tnow,
+                                                        int good_samples) {
+  std::lock_guard<std::mutex> lk(status_mtx);
+  status.synchronized = (good_samples >= snapshot.MinSamplesToLock());
+  status.rtt_ms = sample_rtt_ms;
+  status.last_delay_s = sample_rtt_ms / 1000.0;
+  status.offset_s = sample_offset_s;
+  status.last_update_unix_s = tnow;
+  status.last_error.clear();
+}
+
+std::tuple<double, double, double>
+ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
+                                                        double sample_offset_s,
+                                                        double tnow) {
+  // Add sample to sliding window
+  int maxw = std::max(snapshot.OffsetWindow(), snapshot.SkewWindow());
+  estimator_state_.AddSample(sample_offset_s, tnow, maxw);
+
+  // Compute robust target: median of last window, and min/max for debug
+  auto stats = estimator_state_.ComputeOffsetStats(snapshot.OffsetWindow(),
+                                                   sample_offset_s);
+  double median = stats.median;
+  double omin = stats.min;
+  double omax = stats.max;
+
+  {
+    std::lock_guard<std::mutex> lk(est_mtx);
+    offset_target_s = median;
+  }
+
+  return std::make_tuple(median, omin, omax);
+}
+
+ntpclock::Status::Correction
+ntpclock::ClockService::Impl::ApplyCorrectionDecision(
+    const internal::ClockCorrectionPolicy::Decision& decision,
+    double* out_amount_s) {
+  double applied = offset_applied_s.load(std::memory_order_relaxed);
+  *out_amount_s = decision.amount_s;
+
+  if (decision.type == internal::ClockCorrectionPolicy::Type::Step) {
+    // Step correction (may jump backwards)
+    offset_applied_s.store(applied + decision.amount_s,
+                           std::memory_order_relaxed);
+    monotonicity_guard_.AllowBackwardOnce();
+    return Status::Correction::Step;
+  } else if (decision.type == internal::ClockCorrectionPolicy::Type::Slew) {
+    // Slew correction (bounded rate)
+    offset_applied_s.store(applied + decision.amount_s,
+                           std::memory_order_relaxed);
+    return Status::Correction::Slew;
+  }
+
+  return Status::Correction::None;
+}
+
+void ntpclock::ClockService::Impl::PopulateSuccessStatus(
+    Status* st, const Options& snapshot, double tnow, int good_samples,
+    double median, double omin, double omax, Status::Correction correction,
+    double correction_amount) {
+  st->synchronized = (good_samples >= snapshot.MinSamplesToLock());
+  st->last_update_unix_s = tnow;
+  st->skew_ppm = estimator_state_.ComputeSkewPpm(snapshot.SkewWindow());
+  st->samples = good_samples;
+  st->offset_window = snapshot.OffsetWindow();
+  st->skew_window = snapshot.SkewWindow();
+  st->window_count = estimator_state_.GetSampleCount();
+  st->offset_median_s = median;
+  st->offset_min_s = omin;
+  st->offset_max_s = omax;
+  st->offset_applied_s = offset_applied_s.load(std::memory_order_relaxed);
+  st->last_correction = correction;
+  st->last_correction_amount_s = correction_amount;
+
+  {
+    std::lock_guard<std::mutex> lk(est_mtx);
+    st->offset_target_s = offset_target_s;
+  }
+}
+
 void ntpclock::ClockService::Impl::Loop() {
   // Loop until stopped; snapshot options each iteration for runtime changes.
 
   int good_samples = 0;
   while (running.load(std::memory_order_acquire)) {
+    // 1. Snapshot configuration for this iteration
     auto snapshot = [&]() {
       std::lock_guard<std::mutex> lk(opts_mtx);
       return opts;  // copy
@@ -310,11 +401,13 @@ void ntpclock::ClockService::Impl::Loop() {
     const double slew_rate_s_per_s = snapshot.SlewRateMsPerSec() / 1000.0;
     const int poll_interval_ms = snapshot.PollIntervalMs();
 
+    // 2. Acquire NTP sample
     double sample_offset_s = 0.0;
     int sample_rtt_ms = 0;
     std::string err;
     bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &err);
 
+    // 3. Initialize status structure
     Status st_local;
     st_local.last_error.clear();
     st_local.rtt_ms = sample_rtt_ms;
@@ -326,109 +419,58 @@ void ntpclock::ClockService::Impl::Loop() {
     st_local.last_correction = Status::Correction::None;
     st_local.last_correction_amount_s = 0.0;
 
+    // 4. Process sample if valid
     if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
-      // Record sample time for estimators
       double tnow = 0.0;
       {
         std::lock_guard<std::mutex> lk(opts_mtx);
         tnow = opts.TimeSourcePtr()->NowUnix();
       }
 
-      // If we recently applied a vendor ABS/RATE, skip step decisions once to
-      // avoid double-application (EF step + NTP step).
-      double inhibit_until =
-          inhibit_step_until_s.load(std::memory_order_relaxed);
-      if (tnow < inhibit_until) {
-        // Do not mutate estimators or counters; preserve last_correction.
-        // Update a subset of fields for visibility.
-        {
-          std::lock_guard<std::mutex> lk(status_mtx);
-          status.synchronized = (good_samples >= snapshot.MinSamplesToLock());
-          status.rtt_ms = sample_rtt_ms;
-          status.last_delay_s = sample_rtt_ms / 1000.0;
-          status.offset_s = sample_offset_s;
-          status.last_update_unix_s = tnow;
-          status.last_error.clear();
-        }
+      // 4a. Check if step corrections are temporarily inhibited
+      if (step_inhibitor_.IsInhibited(tnow)) {
+        HandleInhibitedState(snapshot, sample_offset_s, sample_rtt_ms, tnow,
+                             good_samples);
         std::this_thread::sleep_for(milliseconds(poll_interval_ms));
         continue;
       }
-      // Keep sliding windows
-      offsets_.push_back(sample_offset_s);
-      times_.push_back(tnow);
-      int maxw = std::max(snapshot.OffsetWindow(), snapshot.SkewWindow());
-      if (maxw < 1) maxw = 1;
-      while (offsets_.size() > static_cast<size_t>(maxw))
-        offsets_.erase(offsets_.begin());
-      while (times_.size() > static_cast<size_t>(maxw))
-        times_.erase(times_.begin());
 
-      // Compute robust target: median of last window, and min/max for debug
-      auto stats = internal::OffsetEstimator::ComputeStats(
-          offsets_, snapshot.OffsetWindow(), sample_offset_s);
-      double median = stats.median;
-      double omin = stats.min;
-      double omax = stats.max;
-      {
-        std::lock_guard<std::mutex> lk(est_mtx);
-        offset_target_s = median;
-      }
+      // 4b. Update estimators and compute target offset
+      auto [median, omin, omax] =
+          UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
 
-      double applied = offset_applied_s.load(std::memory_order_relaxed);
+      // 4c. Decide and apply correction
       double delta = 0.0;
       {
         std::lock_guard<std::mutex> lk(est_mtx);
+        double applied = offset_applied_s.load(std::memory_order_relaxed);
         delta = offset_target_s - applied;
       }
 
-      if (std::abs(delta) >= step_thresh_s) {
-        // Step correction (may jump backwards)
-        offset_applied_s.store(applied + delta, std::memory_order_relaxed);
-        allow_backward_once.store(true, std::memory_order_release);
-        st_local.last_correction = Status::Correction::Step;
-        st_local.last_correction_amount_s = delta;
+      auto decision = correction_policy_.Decide(
+          delta, step_thresh_s, slew_rate_s_per_s, poll_interval_ms / 1000.0);
 
-      } else {
-        // Slew correction (bounded rate)
-        double max_change = slew_rate_s_per_s * (poll_interval_ms / 1000.0);
-        double change = std::clamp(delta, -max_change, max_change);
-        offset_applied_s.store(applied + change, std::memory_order_relaxed);
-        if (std::abs(change) > 0.0) {
-          st_local.last_correction = Status::Correction::Slew;
-          st_local.last_correction_amount_s = change;
-        }
-      }
+      double correction_amount = 0.0;
+      Status::Correction correction =
+          ApplyCorrectionDecision(decision, &correction_amount);
 
+      // 4d. Populate success status
       good_samples++;
-      st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
-      st_local.last_update_unix_s = tnow;
-      // Estimate skew (ppm) via simple OLS slope of offset over time
-      st_local.skew_ppm = internal::SkewEstimator::ComputeSkewPpm(
-          times_, offsets_, snapshot.SkewWindow());
-      st_local.samples = good_samples;
-      st_local.offset_window = snapshot.OffsetWindow();
-      st_local.skew_window = snapshot.SkewWindow();
-      st_local.window_count = static_cast<int>(offsets_.size());
-      st_local.offset_median_s = median;
-      st_local.offset_min_s = omin;
-      st_local.offset_max_s = omax;
-      st_local.offset_applied_s =
-          offset_applied_s.load(std::memory_order_relaxed);
-      {
-        std::lock_guard<std::mutex> lk(est_mtx);
-        st_local.offset_target_s = offset_target_s;
-      }
+      PopulateSuccessStatus(&st_local, snapshot, tnow, good_samples, median,
+                            omin, omax, correction, correction_amount);
     } else {
-      // Failure; keep previous applied offset, keep trying.
+      // Sample acquisition failed or RTT exceeded threshold
       st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
       st_local.last_error = err.empty() ? "sample rejected" : err;
     }
 
+    // 5. Update shared status
     {
       std::lock_guard<std::mutex> lk(status_mtx);
       status = st_local;
     }
 
+    // 6. Sleep until next poll
     std::this_thread::sleep_for(milliseconds(poll_interval_ms));
   }
 }
@@ -470,16 +512,8 @@ double ntpclock::ClockService::NowUnix() const {
   double candidate =
       base + p_->offset_applied_s.load(std::memory_order_relaxed);
 
-  // Monotonic during slew only; allow one backward jump right after a Step.
-  if (p_->allow_backward_once.exchange(false)) {
-    p_->last_now_returned_s.store(candidate, std::memory_order_relaxed);
-    return candidate;
-  }
-  double last = p_->last_now_returned_s.load(std::memory_order_relaxed);
-  const double eps = 1e-9;
-  double clamped = std::max(candidate, last + eps);
-  p_->last_now_returned_s.store(clamped, std::memory_order_relaxed);
-  return clamped;
+  // Enforce monotonicity using the extracted guard
+  return p_->monotonicity_guard_.EnforceMonotonic(candidate);
 }
 
 double ntpclock::ClockService::OffsetSeconds() const {
