@@ -1,10 +1,12 @@
 // Copyright (c) 2025 <Your Name>
 /**
  * @file
- * @brief NTP vendor extension hint processor.
+ * @brief NTP vendor extension hint processor with step inhibition.
  *
  * Parses and applies vendor-specific extension fields from NTP responses,
- * specifically handling SetRate and SetAbsolute hints.
+ * specifically handling SetRate and SetAbsolute hints. Automatically
+ * inhibits NTP step corrections after applying vendor hints to prevent
+ * double-stepping.
  */
 
 #ifndef NTPCLOCK_INTERNAL_VENDOR_HINT_PROCESSOR_HPP_
@@ -15,16 +17,18 @@
 
 #include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/qpc_clock.hpp"
+#include "step_inhibitor.hpp"
 
 namespace ntpclock {
 namespace internal {
 
 /**
- * @brief Processes NTP vendor extension hints (SetRate/SetAbsolute).
+ * @brief Processes NTP vendor extension hints with step inhibition.
  *
  * Parses vendor extension fields from received NTP packets and applies
  * rate/absolute time changes to a TimeSource. Provides deduplication
- * based on sequence numbers.
+ * based on sequence numbers and automatically inhibits step corrections
+ * after applying hints to prevent double-stepping.
  */
 class VendorHintProcessor {
  public:
@@ -46,15 +50,18 @@ class VendorHintProcessor {
    * @param ntp_packet_size Size of the basic NTP packet structure.
    * @param time_source Target TimeSource to apply hints to.
    * @param step_threshold_s Threshold for applying absolute time changes (seconds).
+   * @param poll_interval_s Polling interval for step inhibition duration (seconds).
    * @return HintResult indicating what was applied and whether reset is needed.
    *
    * Parses vendor extension fields, deduplicates by sequence number,
-   * and applies SetRate/SetAbsolute if values differ meaningfully.
+   * applies SetRate/SetAbsolute if values differ meaningfully, and
+   * automatically inhibits step corrections for one poll interval.
    */
   HintResult ProcessAndApply(const std::vector<uint8_t>& rx_data,
                              size_t ntp_packet_size,
                              ntpserver::TimeSource* time_source,
-                             double step_threshold_s) {
+                             double step_threshold_s,
+                             double poll_interval_s) {
     HintResult result;
 
     // Check if there's extension data beyond the NTP packet
@@ -116,11 +123,28 @@ class VendorHintProcessor {
       }
     }
 
+    // Inhibit step corrections for one poll interval after applying hints
+    if (result.reset_needed) {
+      double now = time_source->NowUnix();
+      step_inhibitor_.InhibitUntil(now + poll_interval_s);
+    }
+
     return result;
   }
 
+  /**
+   * @brief Check if step corrections are currently inhibited.
+   *
+   * @param current_time_s Current UNIX time (seconds).
+   * @return true if steps are inhibited, false otherwise.
+   */
+  bool IsStepInhibited(double current_time_s) const {
+    return step_inhibitor_.IsInhibited(current_time_s);
+  }
+
  private:
-  uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
+  uint32_t last_seq_ = 0;        ///< Last processed sequence number for deduplication
+  StepInhibitor step_inhibitor_;  ///< Step correction inhibition manager
 };
 
 }  // namespace internal

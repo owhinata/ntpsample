@@ -27,7 +27,6 @@
 #include "internal/ntp_client.hpp"
 #include "internal/offset_estimator.hpp"
 #include "internal/skew_estimator.hpp"
-#include "internal/step_inhibitor.hpp"
 #include "internal/sync_estimator_state.hpp"
 #include "internal/vendor_hint_processor.hpp"
 #include "ntpserver/ntp_extension.hpp"
@@ -155,7 +154,6 @@ struct ntpclock::ClockService::Impl {
   internal::ClockCorrector clock_corrector{&offset_applied_s};
   internal::VendorHintProcessor vendor_hint_processor;
   internal::SyncEstimatorState estimator_state;
-  internal::StepInhibitor step_inhibitor;
 
   // Networking
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms,
@@ -243,16 +241,16 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
 
   // Get options snapshot
   double step_threshold_s = 0.0;
-  int poll_ms = 1000;
+  double poll_interval_s = 1.0;
   {
     std::lock_guard<std::mutex> lk(opts_mtx);
     step_threshold_s = opts.StepThresholdMs() / 1000.0;
-    poll_ms = opts.PollIntervalMs();
+    poll_interval_s = opts.PollIntervalMs() / 1000.0;
   }
 
-  // Process vendor hints using extracted processor
-  auto result = vendor_hint_processor.ProcessAndApply(rx, sizeof(NtpPacket), ts,
-                                                      step_threshold_s);
+  // Process vendor hints (automatically inhibits step corrections)
+  auto result = vendor_hint_processor.ProcessAndApply(
+      rx, sizeof(NtpPacket), ts, step_threshold_s, poll_interval_s);
 
   // If reset is needed, clear estimator state and update status
   if (result.reset_needed) {
@@ -264,14 +262,11 @@ void ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
       offset_target_s = 0.0;
     }
 
-    // Inhibit NTP step once: skip step decisions for ~1 poll interval
-    double now = ts->NowUnix();
-    step_inhibitor.InhibitUntil(now + (poll_ms / 1000.0));
-
     // If absolute time was set, allow backward jump and update status
     if (result.abs_applied) {
       clock_corrector.AllowBackwardOnce();
 
+      double now = ts->NowUnix();
       std::lock_guard<std::mutex> lk2(status_mtx);
       status.last_correction = Status::Correction::Step;
       status.last_correction_amount_s = result.step_amount_s;
@@ -387,7 +382,7 @@ void ntpclock::ClockService::Impl::Loop() {
       double tnow = time_source ? time_source->NowUnix() : 0.0;
 
       // 4a. Check if step corrections are temporarily inhibited
-      if (step_inhibitor.IsInhibited(tnow)) {
+      if (vendor_hint_processor.IsStepInhibited(tnow)) {
         HandleInhibitedState(snapshot, sample_offset_s, sample_rtt_ms, tnow,
                              good_samples);
         std::this_thread::sleep_for(milliseconds(poll_interval_ms));
