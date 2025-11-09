@@ -10,6 +10,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 #include "ntpclock/clock_service.hpp"
 #include "ntpserver/time_spec.hpp"
@@ -26,12 +27,7 @@ namespace internal {
  */
 class ClockCorrector {
  public:
-  /**
-   * @brief Construct corrector with reference to shared offset state.
-   *
-   * @param offset_applied Pointer to atomic offset variable (owned by caller).
-   */
-  explicit ClockCorrector(std::atomic<double>* offset_applied);
+  ClockCorrector() = default;
 
   /**
    * @brief Apply offset correction based on target vs current delta.
@@ -80,12 +76,23 @@ class ClockCorrector {
    */
   ntpserver::TimeSpec GetMonotonicTime(const ntpserver::TimeSpec& base_time);
 
- private:
-  std::atomic<double>* offset_applied_;
+  /**
+   * @brief Get current offset correction value.
+   * @return Current applied offset (in seconds as double for compatibility).
+   */
+  double GetOffsetApplied() const;
 
-  // Monotonicity state (integrated from MonotonicityGuard)
-  std::atomic<double> last_returned_s_{0.0};
-  std::atomic<bool> allow_backward_once_{false};
+  /**
+   * @brief Reset offset to zero.
+   */
+  void ResetOffset();
+
+ private:
+  // Correction and monotonicity state (single mutex for consistency)
+  mutable std::mutex mtx_;
+  ntpserver::TimeSpec offset_applied_;
+  ntpserver::TimeSpec last_returned_;
+  bool allow_backward_once_{false};
 };
 
 }  // namespace internal

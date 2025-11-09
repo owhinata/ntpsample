@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
   while (true) {
     const int cols = TermWidth();
     ntpclock::Status st = svc.GetStatus();
-    double now_s = svc.NowUnix();
+    double now_s = svc.NowUnix().ToDouble();
     std::string now_line;
     {
       const int offset = opt_utc ? 0 : 9 * 3600;
@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
     std::snprintf(buf, sizeof(buf), "sync=%s", st.synchronized ? "true" : "false"); cur.emplace_back(buf);
     std::snprintf(buf, sizeof(buf), "rtt_ms=%d  delay_s=%.3f", st.rtt_ms, st.last_delay_s); cur.emplace_back(buf);
     std::snprintf(buf, sizeof(buf), "offset_s=%.6f  skew_ppm=%.1f", st.offset_s, st.skew_ppm); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "samples=%d  last_update=%.3f", st.samples, st.last_update_unix_s); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "samples=%d  last_update=%.3f", st.samples, st.last_update.ToDouble()); cur.emplace_back(buf);
     const char* corr = st.last_correction == ntpclock::Status::Correction::Step ? "Step"
                         : (st.last_correction == ntpclock::Status::Correction::Slew ? "Slew" : "None");
     std::snprintf(buf, sizeof(buf), "last_corr=%s  amount=%.6f", corr, st.last_correction_amount_s); cur.emplace_back(buf);

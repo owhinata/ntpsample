@@ -7,9 +7,6 @@
 namespace ntpclock {
 namespace internal {
 
-ClockCorrector::ClockCorrector(std::atomic<double>* offset_applied)
-    : offset_applied_(offset_applied) {}
-
 Status::Correction ClockCorrector::Apply(
     double current_offset, double target_offset, double step_threshold_s,
     double slew_rate_s_per_s, double poll_interval_s, double* out_amount_s) {
@@ -17,8 +14,16 @@ Status::Correction ClockCorrector::Apply(
 
   if (std::abs(delta) >= step_threshold_s) {
     // Step correction: apply full delta immediately
-    offset_applied_->store(current_offset + delta, std::memory_order_relaxed);
-    allow_backward_once_.store(true, std::memory_order_release);
+    ntpserver::TimeSpec new_offset =
+        ntpserver::TimeSpec::FromDouble(current_offset + delta);
+    ntpserver::TimeSpec delta_ts = ntpserver::TimeSpec::FromDouble(delta);
+    {
+      std::lock_guard<std::mutex> lk(mtx_);
+      offset_applied_ = new_offset;
+      // Adjust last_returned_ by the step amount to allow backward jump
+      last_returned_ = last_returned_ + delta_ts;
+      allow_backward_once_ = true;
+    }
     *out_amount_s = delta;
     return Status::Correction::Step;
 
@@ -28,8 +33,12 @@ Status::Correction ClockCorrector::Apply(
     double change = std::clamp(delta, -max_change, max_change);
 
     if (std::abs(change) > 0.0) {
-      offset_applied_->store(current_offset + change,
-                             std::memory_order_relaxed);
+      ntpserver::TimeSpec new_offset =
+          ntpserver::TimeSpec::FromDouble(current_offset + change);
+      {
+        std::lock_guard<std::mutex> lk(mtx_);
+        offset_applied_ = new_offset;
+      }
       *out_amount_s = change;
       return Status::Correction::Slew;
     }
@@ -40,30 +49,45 @@ Status::Correction ClockCorrector::Apply(
 }
 
 void ClockCorrector::AllowBackwardOnce() {
-  allow_backward_once_.store(true, std::memory_order_release);
+  std::lock_guard<std::mutex> lk(mtx_);
+  allow_backward_once_ = true;
 }
 
 ntpserver::TimeSpec ClockCorrector::GetMonotonicTime(
     const ntpserver::TimeSpec& base_time) {
-  // Apply current offset correction
-  double offset_s = offset_applied_->load(std::memory_order_relaxed);
-  ntpserver::TimeSpec offset_ts = ntpserver::TimeSpec::FromDouble(offset_s);
-  ntpserver::TimeSpec candidate = base_time + offset_ts;
+  std::lock_guard<std::mutex> lk(mtx_);
 
-  double candidate_d = candidate.ToDouble();
+  // Apply current offset correction
+  ntpserver::TimeSpec candidate = base_time + offset_applied_;
 
   // Allow one backward jump right after a step correction
-  if (allow_backward_once_.exchange(false, std::memory_order_acq_rel)) {
-    last_returned_s_.store(candidate_d, std::memory_order_relaxed);
+  if (allow_backward_once_) {
+    allow_backward_once_ = false;
+    last_returned_ = candidate;
     return candidate;
   }
 
   // Otherwise, enforce monotonicity with a small epsilon
-  double last = last_returned_s_.load(std::memory_order_relaxed);
-  const double eps = 1e-9;
-  double clamped_d = std::max(candidate_d, last + eps);
-  last_returned_s_.store(clamped_d, std::memory_order_relaxed);
-  return ntpserver::TimeSpec::FromDouble(clamped_d);
+  ntpserver::TimeSpec eps = ntpserver::TimeSpec::FromDouble(1e-9);
+  ntpserver::TimeSpec min_next = last_returned_ + eps;
+
+  if (candidate < min_next) {
+    last_returned_ = min_next;
+    return min_next;
+  } else {
+    last_returned_ = candidate;
+    return candidate;
+  }
+}
+
+double ClockCorrector::GetOffsetApplied() const {
+  std::lock_guard<std::mutex> lk(mtx_);
+  return offset_applied_.ToDouble();
+}
+
+void ClockCorrector::ResetOffset() {
+  std::lock_guard<std::mutex> lk(mtx_);
+  offset_applied_ = ntpserver::TimeSpec{};
 }
 
 }  // namespace internal

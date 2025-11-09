@@ -13,6 +13,8 @@
 
 #include <vector>
 
+#include "ntpserver/time_spec.hpp"
+
 namespace ntpserver {
 namespace internal {
 
@@ -29,8 +31,8 @@ class ClientTracker {
    * @brief Client endpoint record.
    */
   struct Client {
-    sockaddr_in addr{};      ///< IPv4 socket address (IP + port).
-    double last_seen{0.0};   ///< Last request time (UNIX seconds).
+    sockaddr_in addr{};    ///< IPv4 socket address (IP + port).
+    TimeSpec last_seen{};  ///< Last request time.
   };
 
   /**
@@ -41,17 +43,17 @@ class ClientTracker {
    * the tracked client list.
    *
    * @param addr Client socket address (IPv4).
-   * @param now_unix Current time in UNIX seconds.
+   * @param now Current time.
    */
-  void Remember(const sockaddr_in& addr, double now_unix) {
+  void Remember(const sockaddr_in& addr, const TimeSpec& now) {
     for (auto& c : clients_) {
       if (c.addr.sin_addr.s_addr == addr.sin_addr.s_addr &&
           c.addr.sin_port == addr.sin_port) {
-        c.last_seen = now_unix;
+        c.last_seen = now;
         return;
       }
     }
-    clients_.push_back(Client{addr, now_unix});
+    clients_.push_back(Client{addr, now});
   }
 
   /**

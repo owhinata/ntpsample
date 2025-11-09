@@ -25,7 +25,7 @@ UdpSocket::~UdpSocket() { Close(); }
 bool UdpSocket::IsOpen() const { return sock_ != INVALID_SOCKET; }
 
 bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
-                     std::function<double()> get_time) {
+                     std::function<ntpserver::TimeSpec()> get_time) {
   if (IsOpen()) {
     return false;  // Already open
   }
@@ -176,7 +176,8 @@ void UdpSocket::ReceiveLoop() {
     }
 
     // Get receive timestamp
-    double recv_time = get_time_ ? get_time_() : 0.0;
+    ntpserver::TimeSpec recv_time =
+        get_time_ ? get_time_() : ntpserver::TimeSpec{};
 
     // Classify message type
     std::vector<uint8_t> data(buffer.begin(), buffer.begin() + recvd);

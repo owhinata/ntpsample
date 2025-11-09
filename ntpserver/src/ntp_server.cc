@@ -53,8 +53,8 @@ inline uint64_t ToNtpTimestamp(double unix_seconds) {
  */
 inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
                                 int8_t precision, uint32_t ref_id_be,
-                                double t_ref, double t_recv, double t_tx,
-                                NtpPacket* out) {
+                                const TimeSpec& t_ref, const TimeSpec& t_recv,
+                                const TimeSpec& t_tx, NtpPacket* out) {
   out->li_vn_mode =
       static_cast<uint8_t>((0 << 6) | (4 << 3) | 4);  // LI=0,VN=4,Mode=4
   out->stratum = stratum;
@@ -64,10 +64,10 @@ inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
   out->root_dispersion = htonl(0);
   out->ref_id = ref_id_be;
 
-  out->ref_timestamp = Hton64(ToNtpTimestamp(t_ref));
+  out->ref_timestamp = Hton64(t_ref.ToNtpTimestamp());
   out->orig_timestamp = req.tx_timestamp;  // echo client's transmit timestamp
-  out->recv_timestamp = Hton64(ToNtpTimestamp(t_recv));
-  out->tx_timestamp = Hton64(ToNtpTimestamp(t_tx));
+  out->recv_timestamp = Hton64(t_recv.ToNtpTimestamp());
+  out->tx_timestamp = Hton64(t_tx.ToNtpTimestamp());
 }
 }  // namespace
 
@@ -114,18 +114,17 @@ class NtpServer::Impl {
     TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
     if (sock_ == INVALID_SOCKET) return;
     const TimeSpec now = ts->NowUnix();
-    const double now_d = now.ToDouble();  // TODO(phase4): Convert
-                                          // BuildResponsePacket to TimeSpec
 
     // Minimal mode-4 response and EF using SRP helpers
     NtpPacket resp{};
-    BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now_d, now_d,
-                        now_d, &resp);
+    BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now, now, now,
+                        &resp);
     std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
     // prune and send
-    const double cutoff = now_d - 60.0;
+    TimeSpec cutoff_offset = TimeSpec::FromDouble(60.0);
+    TimeSpec cutoff = now - cutoff_offset;
     auto& clients = client_tracker_.GetAllMutable();
     auto it = clients.begin();
     while (it != clients.end()) {
@@ -217,7 +216,7 @@ class NtpServer::Impl {
     NtpPacket resp = MakeResponse(req, ts, &t_recv);
     std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix(), false);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
-    RememberClient(cli, t_recv.ToDouble());
+    RememberClient(cli, t_recv);
     SendBuf(cli, clen, buf);
   }
 
@@ -243,13 +242,12 @@ class NtpServer::Impl {
   NtpPacket MakeResponse(const NtpPacket& req, TimeSource* ts,
                          TimeSpec* t_recv) {
     const TimeSpec tr = ts->NowUnix();
-    const double t_ref = tr.ToDouble();
-    const double t_rx = tr.ToDouble();
-    const double t_tx = ts->NowUnix().ToDouble();
+    const TimeSpec t_ref = tr;
+    const TimeSpec t_tx = ts->NowUnix();
     if (t_recv) *t_recv = tr;
     NtpPacket resp{};
-    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, t_rx,
-                        t_tx, &resp);
+    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, tr, t_tx,
+                        &resp);
     return resp;
   }
 
@@ -307,8 +305,8 @@ class NtpServer::Impl {
            reinterpret_cast<const sockaddr*>(&cli), clen);
   }
 
-  void RememberClient(const sockaddr_in& cli, double now_unix) {
-    client_tracker_.Remember(cli, now_unix);
+  void RememberClient(const sockaddr_in& cli, const TimeSpec& now) {
+    client_tracker_.Remember(cli, now);
   }
 
   std::thread thread_;

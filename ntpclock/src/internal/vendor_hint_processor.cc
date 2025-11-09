@@ -73,7 +73,9 @@ bool VendorHintProcessor::ApplyAbsoluteHint(
 
   ntpserver::TimeSpec cur = time_source->NowUnix();
   ntpserver::TimeSpec diff = ntpserver::AbsDiff(payload.abs_time, cur);
-  if (diff.ToDouble() < step_threshold_s) {
+  ntpserver::TimeSpec threshold =
+      ntpserver::TimeSpec::FromDouble(step_threshold_s);
+  if (diff < threshold) {
     return false;
   }
 
@@ -107,7 +109,9 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
 
     bool rate_changed = std::abs(payload.rate_scale - cur_rate) > rate_eps;
     ntpserver::TimeSpec diff = ntpserver::AbsDiff(payload.abs_time, cur_abs);
-    bool abs_changed = diff.ToDouble() >= step_threshold_s;
+    ntpserver::TimeSpec threshold =
+        ntpserver::TimeSpec::FromDouble(step_threshold_s);
+    bool abs_changed = diff >= threshold;
 
     if (rate_changed || abs_changed) {
       time_source->SetAbsoluteAndRate(payload.abs_time, payload.rate_scale);

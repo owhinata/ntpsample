@@ -140,15 +140,12 @@ struct ntpclock::ClockService::Impl {
   std::atomic<bool> running{false};
   std::thread thread;
 
-  // Offsets (seconds)
-  std::atomic<double> offset_applied_s{0.0};
-
   // Status
   Status status{};
   std::mutex status_mtx;
 
   // Extracted components (SRP)
-  internal::ClockCorrector clock_corrector{&offset_applied_s};
+  internal::ClockCorrector clock_corrector;
   internal::VendorHintProcessor vendor_hint_processor;
   internal::SyncEstimatorState estimator_state;
 
@@ -318,16 +315,15 @@ inline void WriteTimestamp(const ntpserver::TimeSpec& ts, uint8_t* dst8) {
   std::memcpy(dst8 + 4, &frac_be, 4);
 }
 
-/** Read NTP timestamp (64-bit big-endian) to UNIX timestamp. */
-inline double ReadTimestamp(const uint8_t* src8) {
+/** Read NTP timestamp (64-bit big-endian) to TimeSpec. */
+inline ntpserver::TimeSpec ReadTimestamp(const uint8_t* src8) {
   uint32_t sec_be = 0, frac_be = 0;
   std::memcpy(&sec_be, src8 + 0, 4);
   std::memcpy(&frac_be, src8 + 4, 4);
   uint32_t sec = ntohl(sec_be);
   uint32_t frac = ntohl(frac_be);
-  return (static_cast<double>(sec) -
-          static_cast<double>(ntpserver::kNtpUnixEpochDiff)) +
-         (static_cast<double>(frac) / static_cast<double>(1ULL << 32));
+  uint64_t ntp_ts = (static_cast<uint64_t>(sec) << 32) | frac;
+  return ntpserver::TimeSpec::FromNtpTimestamp(ntp_ts);
 }
 }  // namespace
 
@@ -424,18 +420,22 @@ bool ntpclock::ClockService::Impl::ProcessNtpResponse(
   ntpserver::NtpPacket resp{};
   std::memcpy(&resp, msg.data.data(), sizeof(resp));
 
-  // Extract timestamps
-  double T1_d = T1.ToDouble();
-  double T2 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
-  double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
-  double T4 = msg.recv_time;
+  // Extract timestamps as TimeSpec
+  ntpserver::TimeSpec T2 =
+      ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
+  ntpserver::TimeSpec T3 =
+      ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
+  const ntpserver::TimeSpec& T4 = msg.recv_time;
 
-  // Compute offset and delay
-  double delay = (T4 - T1_d) - (T3 - T2);
-  double offset = ((T2 - T1_d) + (T3 - T4)) / 2.0;
+  // Compute offset and delay using TimeSpec arithmetic
+  // delay = (T4 - T1) - (T3 - T2)
+  ntpserver::TimeSpec delay = (T4 - T1) - (T3 - T2);
+  // offset = ((T2 - T1) + (T3 - T4)) / 2
+  ntpserver::TimeSpec offset_2x = (T2 - T1) + (T3 - T4);
 
-  *out_offset_s = offset;
-  *out_rtt_ms = static_cast<int>(std::max(0.0, delay) * 1000.0 + 0.5);
+  *out_offset_s = offset_2x.ToDouble() / 2.0;
+  *out_rtt_ms =
+      static_cast<int>(std::max(0.0, delay.ToDouble()) * 1000.0 + 0.5);
   return true;
 }
 
@@ -471,7 +471,7 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
       exchange_abort.store(true, std::memory_order_relaxed);
     }
     estimator_state.Clear();
-    offset_applied_s.store(0.0, std::memory_order_relaxed);
+    clock_corrector.ResetOffset();
 
     // If absolute time was set, allow backward jump
     if (result.abs_applied) {
@@ -526,7 +526,7 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
     st.last_correction = Status::Correction::Step;
     st.last_correction_amount_s = hint_result.step_amount.ToDouble();
     st.window_count = 0;
-    st.offset_applied_s = 0.0;
+    st.offset_applied_s = clock_corrector.GetOffsetApplied();
     st.offset_target_s = 0.0;
   }
 
@@ -549,7 +549,7 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
   st.offset_median_s = median;
   st.offset_min_s = omin;
   st.offset_max_s = omax;
-  st.offset_applied_s = offset_applied_s.load(std::memory_order_relaxed);
+  st.offset_applied_s = clock_corrector.GetOffsetApplied();
   st.offset_target_s = median;
   st.last_correction = correction;
   st.last_correction_amount_s = correction_amount;
@@ -614,7 +614,7 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
     auto [median, omin, omax] =
         UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
 
-    double applied = offset_applied_s.load(std::memory_order_relaxed);
+    double applied = clock_corrector.GetOffsetApplied();
     double correction_amount = 0.0;
     Status::Correction correction =
         clock_corrector.Apply(applied, median, step_thresh_s, slew_rate_s_per_s,
@@ -691,8 +691,8 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   }
 
   // Open UDP socket for persistent connection
-  auto get_time = [time_source]() -> double {
-    return time_source ? time_source->NowUnix().ToDouble() : 0.0;
+  auto get_time = [time_source]() -> ntpserver::TimeSpec {
+    return time_source ? time_source->NowUnix() : ntpserver::TimeSpec{};
   };
   if (!p_->udp_socket.Open(ip, port, get_time)) {
     p_->time_source = nullptr;

@@ -47,7 +47,8 @@ int main(int argc, char** argv) {
   ntpserver::NtpServer server;
   auto& ts = ntpserver::QpcClock::Instance();
   ts.SetRate(init_rate);
-  if (init_abs != 0.0) ts.SetAbsolute(init_abs);
+  if (init_abs != 0.0)
+    ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));
   server.SetTimeSource(&ts);
 
   if (!server.Start(port)) {
@@ -75,48 +76,48 @@ int main(int argc, char** argv) {
       break;
     }
     if (std::strcmp(line, "now") == 0) {
-      double now = ts.NowUnix();
+      double now = ts.NowUnix().ToDouble();
       std::printf("now=%.6f\n", now);
       continue;
     }
     if (std::strncmp(line, "rate ", 5) == 0) {
       double r = std::atof(line + 5);
-      double before = ts.NowUnix();
+      double before = ts.NowUnix().ToDouble();
       ts.SetRate(r);
       server.NotifyControlSnapshot();
-      double after = ts.NowUnix();
+      double after = ts.NowUnix().ToDouble();
       std::printf("rate set to %.6f (notify) before=%.6f after=%.6f\n", r,
                   before, after);
       continue;
     }
     if (std::strncmp(line, "abs ", 4) == 0) {
       double t = std::atof(line + 4);
-      double before = ts.NowUnix();
-      ts.SetAbsolute(t);
+      double before = ts.NowUnix().ToDouble();
+      ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(t));
       server.NotifyControlSnapshot();
-      double after = ts.NowUnix();
+      double after = ts.NowUnix().ToDouble();
       std::printf("absolute set to %.6f (notify) before=%.6f after=%.6f\n", t,
                   before, after);
       continue;
     }
     if (std::strncmp(line, "add ", 4) == 0) {
       double d = std::atof(line + 4);
-      double before = ts.NowUnix();
+      double before = ts.NowUnix().ToDouble();
       // Use absolute update to avoid cumulative rounding and ensure exact step.
-      ts.SetAbsolute(before + d);
+      ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(before + d));
       server.NotifyControlSnapshot();
-      double after = ts.NowUnix();
+      double after = ts.NowUnix().ToDouble();
       std::printf(
           "offset adjusted by %+f (notify) before=%.6f after=%.6f delta=%.6f\n",
           d, before, after, after - before);
       continue;
     }
     if (std::strcmp(line, "reset") == 0) {
-      double before = ts.NowUnix();
+      double before = ts.NowUnix().ToDouble();
       double rate_before = ts.GetRate();
       ts.ResetToRealTime();
       server.NotifyControlSnapshot();
-      double after = ts.NowUnix();
+      double after = ts.NowUnix().ToDouble();
       std::printf(
           "reset to real-time (notify) before=%.6f (rate=%.6f) "
           "after=%.6f (rate=1.0)\n",
