@@ -9,9 +9,7 @@
 
 #pragma once
 
-#include <algorithm>
 #include <atomic>
-#include <cmath>
 
 #include "ntpclock/clock_service.hpp"
 
@@ -32,8 +30,7 @@ class ClockCorrector {
    *
    * @param offset_applied Pointer to atomic offset variable (owned by caller).
    */
-  explicit ClockCorrector(std::atomic<double>* offset_applied)
-      : offset_applied_(offset_applied) {}
+  explicit ClockCorrector(std::atomic<double>* offset_applied);
 
   /**
    * @brief Apply offset correction based on target vs current delta.
@@ -56,33 +53,7 @@ class ClockCorrector {
    */
   Status::Correction Apply(double current_offset, double target_offset,
                            double step_threshold_s, double slew_rate_s_per_s,
-                           double poll_interval_s, double* out_amount_s) {
-    double delta = target_offset - current_offset;
-
-    if (std::abs(delta) >= step_threshold_s) {
-      // Step correction: apply full delta immediately
-      offset_applied_->store(current_offset + delta,
-                             std::memory_order_relaxed);
-      allow_backward_once_.store(true, std::memory_order_release);
-      *out_amount_s = delta;
-      return Status::Correction::Step;
-
-    } else {
-      // Slew correction: apply bounded-rate change
-      double max_change = slew_rate_s_per_s * poll_interval_s;
-      double change = std::clamp(delta, -max_change, max_change);
-
-      if (std::abs(change) > 0.0) {
-        offset_applied_->store(current_offset + change,
-                               std::memory_order_relaxed);
-        *out_amount_s = change;
-        return Status::Correction::Slew;
-      }
-    }
-
-    *out_amount_s = 0.0;
-    return Status::Correction::None;
-  }
+                           double poll_interval_s, double* out_amount_s);
 
   /**
    * @brief Allow the next time reading to go backward once.
@@ -90,9 +61,7 @@ class ClockCorrector {
    * Typically called after external time adjustments (e.g., vendor hints
    * applying SetAbsolute) to permit GetMonotonicTime() to reflect the backward jump.
    */
-  void AllowBackwardOnce() {
-    allow_backward_once_.store(true, std::memory_order_release);
-  }
+  void AllowBackwardOnce();
 
   /**
    * @brief Get monotonic corrected time.
@@ -108,23 +77,7 @@ class ClockCorrector {
    * monotonicity. If Apply() previously applied a step correction, allows
    * the result to go backward once, then reverts to enforcing monotonicity.
    */
-  double GetMonotonicTime(double base_time) {
-    // Apply current offset correction
-    double candidate = base_time + offset_applied_->load(std::memory_order_relaxed);
-
-    // Allow one backward jump right after a step correction
-    if (allow_backward_once_.exchange(false, std::memory_order_acq_rel)) {
-      last_returned_s_.store(candidate, std::memory_order_relaxed);
-      return candidate;
-    }
-
-    // Otherwise, enforce monotonicity with a small epsilon
-    double last = last_returned_s_.load(std::memory_order_relaxed);
-    const double eps = 1e-9;
-    double clamped = std::max(candidate, last + eps);
-    last_returned_s_.store(clamped, std::memory_order_relaxed);
-    return clamped;
-  }
+  double GetMonotonicTime(double base_time);
 
  private:
   std::atomic<double>* offset_applied_;

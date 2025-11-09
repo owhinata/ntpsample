@@ -20,6 +20,10 @@ namespace {
 constexpr size_t kNtpPacketSize = 48;
 }  // namespace
 
+UdpSocket::~UdpSocket() { Close(); }
+
+bool UdpSocket::IsOpen() const { return sock_ != INVALID_SOCKET; }
+
 bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
                      std::function<double()> get_time) {
   if (IsOpen()) {

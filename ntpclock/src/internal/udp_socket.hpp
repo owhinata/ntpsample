@@ -52,7 +52,7 @@ class UdpSocket {
   };
 
   UdpSocket() = default;
-  ~UdpSocket() { Close(); }
+  ~UdpSocket();
 
   UdpSocket(const UdpSocket&) = delete;
   UdpSocket& operator=(const UdpSocket&) = delete;
@@ -106,7 +106,7 @@ class UdpSocket {
    *
    * @return true if socket is open and receive thread is running.
    */
-  bool IsOpen() const { return sock_ != INVALID_SOCKET; }
+  bool IsOpen() const;
 
  private:
   /**

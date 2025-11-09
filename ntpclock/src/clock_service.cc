@@ -186,9 +186,11 @@ struct ntpclock::ClockService::Impl {
    * @brief Parse NTP vendor extension from a received datagram and apply.
    *
    * @param rx Raw datagram bytes (NTP header + optional extension fields).
+   * @param snapshot Options snapshot for threshold values.
    * @return VendorHintResult indicating what was applied.
    */
-  VendorHintResult ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
+  VendorHintResult ApplyVendorHintFromRx(const std::vector<uint8_t>& rx,
+                                         const Options& snapshot);
 
   /**
    * @brief Handle a Push notification message.
@@ -220,9 +222,10 @@ struct ntpclock::ClockService::Impl {
    * Constructs Status with current sample info but no estimator updates.
    * Used when vendor hint was applied in the current loop iteration.
    */
-  Status BuildInhibitedStatus(const Options& snapshot, double sample_offset_s,
-                              int sample_rtt_ms, double tnow, int good_samples,
-                              const VendorHintResult& hint_result);
+  Status BuildVendorHintAppliedStatus(const Options& snapshot,
+                                      double sample_offset_s, int sample_rtt_ms,
+                                      double tnow, int good_samples,
+                                      const VendorHintResult& hint_result);
 
   /**
    * @brief Build base status with common fields.
@@ -409,12 +412,8 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
 
 ntpclock::ClockService::Impl::VendorHintResult
 ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
-    const std::vector<uint8_t>& rx) {
-  double step_threshold_s = 0.0;
-  {
-    std::lock_guard<std::mutex> lk(opts_mtx);
-    step_threshold_s = opts.StepThresholdMs() / 1000.0;
-  }
+    const std::vector<uint8_t>& rx, const Options& snapshot) {
+  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
   return ApplyVendorHints(rx, step_threshold_s, false);
 }
 
@@ -447,7 +446,7 @@ void ntpclock::ClockService::Impl::SetBaseStatusFields(
   st->last_error.clear();
 }
 
-ntpclock::Status ntpclock::ClockService::Impl::BuildInhibitedStatus(
+ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
     const Options& snapshot, double sample_offset_s, int sample_rtt_ms,
     double tnow, int good_samples, const VendorHintResult& hint_result) {
   Status st;
@@ -560,7 +559,7 @@ void ntpclock::ClockService::Impl::Loop() {
     // 3a. Process vendor hint from response if available
     VendorHintResult hint_result;
     if (ok && response.size() > sizeof(NtpPacket)) {
-      hint_result = ApplyVendorHintFromRx(response);
+      hint_result = ApplyVendorHintFromRx(response, snapshot);
     }
 
     // 4. Build status based on sample validity and vendor hint state
@@ -568,9 +567,10 @@ void ntpclock::ClockService::Impl::Loop() {
     double tnow = time_source ? time_source->NowUnix() : 0.0;
 
     if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
-      // Inhibited path: vendor hint was applied in this loop iteration
-      st_local = BuildInhibitedStatus(snapshot, sample_offset_s, sample_rtt_ms,
-                                      tnow, good_samples, hint_result);
+      // Vendor hint applied: skip normal correction
+      st_local =
+          BuildVendorHintAppliedStatus(snapshot, sample_offset_s, sample_rtt_ms,
+                                       tnow, good_samples, hint_result);
     } else if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
       // Normal path: process sample and apply correction
       auto [median, omin, omax] =

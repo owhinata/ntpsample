@@ -15,7 +15,10 @@ file(GLOB NTPCLK_HEADERS CONFIGURE_DEPENDS
 )
 set(NTPCLK_SOURCES
   src/clock_service.cc
+  src/internal/clock_corrector.cc
+  src/internal/sync_estimator_state.cc
   src/internal/udp_socket.cc
+  src/internal/vendor_hint_processor.cc
 )
 
 if(NTP_CLOCK_BUILD_SHARED)
