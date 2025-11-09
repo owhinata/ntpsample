@@ -61,8 +61,7 @@ class ClockServiceTimeSource : public ntpserver::TimeSource {
   }
 
   double GetRate() const override {
-    // ClockService doesn't expose rate, return 1.0 (nominal)
-    return 1.0;
+    return clock_service_ ? clock_service_->GetRate() : 1.0;
   }
 
   void SetRate(double) override {

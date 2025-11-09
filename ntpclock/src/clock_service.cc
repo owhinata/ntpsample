@@ -741,3 +741,8 @@ void ntpclock::ClockService::SetOptions(const Options& opt) {
   std::lock_guard<std::mutex> lk(p_->opts_mtx);
   p_->opts = opt;
 }
+
+double ntpclock::ClockService::GetRate() const {
+  auto ts = p_->time_source;
+  return ts ? ts->GetRate() : 1.0;
+}

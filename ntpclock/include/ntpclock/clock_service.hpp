@@ -183,6 +183,12 @@ class ClockService {
    */
   void SetOptions(const Options& opt);
 
+  /**
+   * @brief Get current clock rate from the underlying TimeSource.
+   * @return Clock rate (1.0 = nominal speed).
+   */
+  double GetRate() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> p_;
