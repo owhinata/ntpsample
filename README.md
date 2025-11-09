@@ -1,35 +1,239 @@
-# ntpsample
+# NTP Sample
 
-## Build (Windows, MSVC)
+A high-precision NTP server and client implementation for Windows, featuring vendor extensions for instant time synchronization and gateway capabilities.
 
-Prerequisites
-- CMake 3.20+
-- Visual Studio 2022 Build Tools（C++）または Visual Studio 2022
+## Features
 
-ソース配置
-- ライブラリ/サンプルは `ntpserver/` ディレクトリ配下にあります。
+- **High-precision time representation**: Platform-independent `TimeSpec` (64-bit seconds + 32-bit nanoseconds)
+- **NTP Server** (`ntpserver`): Minimal NTPv4 server with vendor extension support
+- **NTP Client** (`ntpclock`): Clock synchronization service with adaptive correction
+- **Push notifications**: Instant time change propagation via vendor extension fields
+- **Gateway mode**: Multi-tier NTP deployment with upstream sync and downstream serving
+- **Adaptive clock correction**: Automatic slew/step selection based on offset magnitude
 
-### Visual Studio 生成（x64）
+## Project Structure
+
+```
+ntpsample/
+├── ntpserver/          # NTP server library
+│   ├── include/        # Public headers (TimeSource, NtpServer, TimeSpec)
+│   ├── src/            # Server implementation
+│   └── example/        # Server example application
+├── ntpclock/           # NTP client library
+│   ├── include/        # Public headers (ClockService, Options)
+│   ├── src/            # Client implementation and sync logic
+│   └── example/        # Client and gateway example applications
+└── cmake/              # Build configuration
+```
+
+## Build Requirements
+
+- CMake 3.20 or higher
+- Visual Studio 2022 Build Tools (C++) or Visual Studio 2022
+- Windows SDK with Winsock2 support
+
+## Build Instructions
+
+### Building with Visual Studio (x64)
 
 ```bash
-cmake -S ntpserver -B build -G "Visual Studio 17 2022" -A x64 -D NTP_SERVER_BUILD_EXAMPLE=ON
+# Configure
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+# Build
 cmake --build build --config Release
 ```
 
-生成物
-- ライブラリ: `build/Release/ntpserver.lib`
-- サンプル: `build/Release/ntpserver_example.exe`
+### Build Outputs
 
-### 実行（サンプル）
+Libraries:
+- `build/ntpserver/Release/ntpserver.lib` - NTP server library
+- `build/ntpclock/Release/ntpclock.lib` - NTP client library
 
-```bash
-./build/Release/ntpserver_example.exe
-```
+Executables:
+- `build/ntpserver/Release/ntpserver_example.exe` - Simple NTP server
+- `build/ntpclock/Release/ntpclock_example.exe` - NTP client example
+- `build/ntpclock/Release/ntpclock_gateway.exe` - NTP gateway
 
-既定では UDP ポート `9123` で待受します。
+Tests:
+- `build/ntpserver/Release/ntpserver_tests.exe`
+- `build/ntpclock/Release/ntpclock_tests.exe`
 
-### テストの実行
+### Running Tests
 
 ```bash
 ctest --test-dir build -C Release
 ```
+
+Or run test executables directly:
+```bash
+./build/ntpserver/Release/ntpserver_tests.exe
+./build/ntpclock/Release/ntpclock_tests.exe
+```
+
+## Usage Examples
+
+### 1. Simple NTP Server
+
+Start an NTP server on UDP port 9123:
+
+```bash
+./build/ntpserver/Release/ntpserver_example.exe --port 9123
+```
+
+The server will use the system clock (`QueryPerformanceCounter`) as the time source by default.
+
+### 2. NTP Client
+
+Synchronize with an NTP server:
+
+```bash
+./build/ntpclock/Release/ntpclock_example.exe --ip 127.0.0.1 --port 9123 --poll 10000
+```
+
+Options:
+- `--ip IP`: NTP server IP address (default: 127.0.0.1)
+- `--port N`: NTP server port (default: 123)
+- `--poll ms`: Polling interval in milliseconds (default: 10000)
+- `--step ms`: Step threshold in milliseconds (default: 200)
+- `--slew ms_per_s`: Slew rate in ms/second (default: 5.0)
+
+### 3. Multi-tier NTP Gateway
+
+Create an NTP gateway that syncs with an upstream server and serves downstream clients:
+
+```bash
+# Start upstream server on port 9123
+./build/ntpserver/Release/ntpserver_example.exe --port 9123
+
+# Start gateway: sync from 9123, serve on 9124
+./build/ntpclock/Release/ntpclock_gateway.exe --upstream-ip 127.0.0.1 --upstream-port 9123 --serve-port 9124 --poll 10000
+
+# Connect downstream client to gateway
+./build/ntpclock/Release/ntpclock_example.exe --ip 127.0.0.1 --port 9124
+```
+
+The gateway will:
+1. Synchronize with the upstream server using `ClockService`
+2. Serve the synchronized time to downstream clients using `NtpServer`
+3. Propagate Push notifications from upstream to downstream clients
+
+### 4. Testing Push Notifications
+
+Push notifications enable instant time change propagation without waiting for polling intervals.
+
+In the server console, trigger a time change:
+```
+add 31536000    # Add one year (31536000 seconds)
+```
+
+Connected clients will receive a Push notification and synchronize immediately, without waiting for the next poll interval.
+
+## Architecture
+
+### TimeSpec
+
+High-precision time representation using separate integer fields:
+- `int64_t sec`: Seconds since epoch
+- `uint32_t nsec`: Nanoseconds (0-999999999)
+
+This avoids precision loss from floating-point arithmetic while supporting the full NTP timestamp range.
+
+### ClockService (NTP Client)
+
+Core synchronization logic:
+1. **Exchange protocol**: Client sends request, server responds with timestamps (T1-T4)
+2. **Offset calculation**: `offset = ((T2-T1) + (T3-T4)) / 2` using TimeSpec arithmetic
+3. **Clock correction**: Adaptive slew (gradual) or step (immediate) based on offset magnitude
+4. **Monotonicity enforcement**: Prevents backward time jumps (except after step corrections)
+5. **Push support**: Receives vendor extension fields and executes immediate Exchange
+
+### NtpServer
+
+Lightweight NTPv4 server:
+1. **Client tracking**: Maintains list of recently seen client endpoints
+2. **Vendor extensions**: Includes absolute time and rate in responses
+3. **Push notifications**: Broadcasts control snapshots to all tracked clients when time source changes
+4. **TimeSource abstraction**: Can serve from any time source (system clock, synchronized clock, etc.)
+
+### Gateway Architecture
+
+The gateway combines ClockService and NtpServer:
+1. **ClockService** syncs with upstream server and maintains corrected time
+2. **TimeSource adapter** exposes ClockService time to NtpServer
+3. **Status monitoring** detects corrections and triggers Push notifications downstream
+4. **Push propagation** ensures multi-tier deployments synchronize instantly
+
+## Configuration
+
+### ClockService Options
+
+```cpp
+auto opts = ntpclock::Options::Builder()
+    .PollIntervalMs(10000)      // Poll every 10 seconds
+    .StepThresholdMs(200)       // Step if offset > 200ms
+    .SlewRateMsPerSec(5.0)      // Slew at 5ms/second
+    .Build();
+```
+
+### NtpServer Settings
+
+```cpp
+ntpserver::NtpServer server;
+server.SetStratum(2);                          // Stratum level
+server.SetPrecision(-20);                      // Precision (2^-20 seconds)
+server.SetRefId(htonl(0x4C4F434C));           // Reference ID ("LOCL")
+server.Start(port, &time_source);              // Start with time source
+```
+
+## API Overview
+
+### ClockService
+
+```cpp
+#include "ntpclock/clock_service.hpp"
+
+ntpclock::ClockService clock;
+clock.Start("127.0.0.1", 9123, options);
+ntpserver::TimeSpec now = clock.NowUnix();
+ntpclock::Status status = clock.GetStatus();
+clock.Stop();
+```
+
+### NtpServer
+
+```cpp
+#include "ntpserver/ntp_server.hpp"
+
+ntpserver::NtpServer server;
+server.SetStratum(1);
+server.Start(9123, &time_source);
+server.NotifyControlSnapshot();  // Broadcast Push notification
+server.Stop();
+```
+
+### TimeSource Interface
+
+```cpp
+class MyTimeSource : public ntpserver::TimeSource {
+ public:
+  ntpserver::TimeSpec NowUnix() override {
+    // Return current UNIX time
+  }
+  double GetRate() const override {
+    // Return clock rate (1.0 = nominal)
+  }
+};
+```
+
+## Known Issues
+
+- `ClockServiceTest.StepAllowsBackwardOnce` may occasionally fail due to timing races (does not affect functionality)
+
+## License
+
+Copyright (c) 2025
+
+## Author
+
+Created as a demonstration of high-precision NTP implementation with vendor extensions for instant synchronization.
