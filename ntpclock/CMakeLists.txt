@@ -55,10 +55,13 @@ endforeach()
 ntp_add_clang_format(ntpclock ${_fmt})
 ntp_add_cpplint(ntpclock ${_fmt})
 
-# Example program (optional)
+# Example programs (optional)
 if(NTP_CLOCK_BUILD_EXAMPLE)
   add_executable(ntpclock_example example/example_main.cc)
   target_link_libraries(ntpclock_example PRIVATE ntpclock)
+
+  add_executable(ntpclock_gateway example/gateway_main.cc)
+  target_link_libraries(ntpclock_gateway PRIVATE ntpclock ntpserver)
 endif()
 
 # Tests
