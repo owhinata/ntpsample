@@ -143,8 +143,6 @@ struct ntpclock::ClockService::Impl {
 
   // Offsets (seconds)
   std::atomic<double> offset_applied_s{0.0};
-  double offset_target_s = 0.0;
-  std::mutex est_mtx;
 
   // Status
   Status status{};
@@ -272,12 +270,7 @@ ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
   // If reset is needed, clear estimator state
   if (result.reset_needed) {
     estimator_state.Clear();
-
-    {
-      std::lock_guard<std::mutex> lk(est_mtx);
-      offset_applied_s.store(0.0, std::memory_order_relaxed);
-      offset_target_s = 0.0;
-    }
+    offset_applied_s.store(0.0, std::memory_order_relaxed);
 
     // If absolute time was set, allow backward jump
     if (result.abs_applied) {
@@ -332,11 +325,6 @@ ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
   double omin = stats.min;
   double omax = stats.max;
 
-  {
-    std::lock_guard<std::mutex> lk(est_mtx);
-    offset_target_s = median;
-  }
-
   return std::make_tuple(median, omin, omax);
 }
 
@@ -359,14 +347,10 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
   st.offset_min_s = omin;
   st.offset_max_s = omax;
   st.offset_applied_s = offset_applied_s.load(std::memory_order_relaxed);
+  st.offset_target_s = median;
   st.last_correction = correction;
   st.last_correction_amount_s = correction_amount;
   st.last_error.clear();
-
-  {
-    std::lock_guard<std::mutex> lk(est_mtx);
-    st.offset_target_s = offset_target_s;
-  }
 
   return st;
 }
@@ -414,15 +398,9 @@ void ntpclock::ClockService::Impl::Loop() {
           UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
 
       double applied = offset_applied_s.load(std::memory_order_relaxed);
-      double target = 0.0;
-      {
-        std::lock_guard<std::mutex> lk(est_mtx);
-        target = offset_target_s;
-      }
-
       double correction_amount = 0.0;
       Status::Correction correction = clock_corrector.Apply(
-          applied, target, step_thresh_s, slew_rate_s_per_s,
+          applied, median, step_thresh_s, slew_rate_s_per_s,
           poll_interval_ms / 1000.0, &correction_amount);
 
       good_samples++;
