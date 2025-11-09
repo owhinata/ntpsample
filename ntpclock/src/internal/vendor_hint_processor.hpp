@@ -56,6 +56,41 @@ class VendorHintProcessor {
                              double step_threshold_s);
 
  private:
+  /**
+   * @brief Parse and validate vendor extension payload from raw packet.
+   *
+   * @param rx_data Raw NTP packet bytes.
+   * @param ntp_packet_size Size of the basic NTP packet structure.
+   * @param out_payload Output parsed payload on success.
+   * @return true if parsing succeeded, false otherwise.
+   */
+  bool ParseVendorPayload(const std::vector<uint8_t>& rx_data,
+                          size_t ntp_packet_size,
+                          ntpserver::NtpVendorExt::Payload* out_payload);
+
+  /**
+   * @brief Apply rate change hint if present and different.
+   *
+   * @param payload Parsed vendor extension payload.
+   * @param time_source Target TimeSource.
+   * @return true if rate was changed, false otherwise.
+   */
+  bool ApplyRateHint(const ntpserver::NtpVendorExt::Payload& payload,
+                     ntpserver::TimeSource* time_source);
+
+  /**
+   * @brief Apply absolute time hint if present and exceeds threshold.
+   *
+   * @param payload Parsed vendor extension payload.
+   * @param time_source Target TimeSource.
+   * @param step_threshold_s Threshold for applying absolute time changes.
+   * @param out_step_amount Output parameter for step amount.
+   * @return true if absolute time was changed, false otherwise.
+   */
+  bool ApplyAbsoluteHint(const ntpserver::NtpVendorExt::Payload& payload,
+                         ntpserver::TimeSource* time_source,
+                         double step_threshold_s, double* out_step_amount);
+
   uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
 };
 

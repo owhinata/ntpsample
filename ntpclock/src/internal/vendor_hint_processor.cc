@@ -7,21 +7,19 @@
 namespace ntpclock {
 namespace internal {
 
-VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
+bool VendorHintProcessor::ParseVendorPayload(
     const std::vector<uint8_t>& rx_data, size_t ntp_packet_size,
-    ntpserver::TimeSource* time_source, double step_threshold_s) {
-  HintResult result;
-
+    ntpserver::NtpVendorExt::Payload* out_payload) {
   // Check if there's extension data beyond the NTP packet
   if (rx_data.size() <= ntp_packet_size) {
-    return result;
+    return false;
   }
 
   // Parse extension field header
   const uint8_t* p = rx_data.data() + ntp_packet_size;
   size_t remain = rx_data.size() - ntp_packet_size;
   if (remain < 4U) {
-    return result;
+    return false;
   }
 
   uint16_t typ = static_cast<uint16_t>((p[0] << 8) | p[1]);
@@ -30,45 +28,81 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
   // Validate extension field type and length
   if (typ != ntpserver::NtpVendorExt::kEfTypeVendorHint || len < 4U ||
       len > remain) {
-    return result;
+    return false;
   }
 
   // Extract and parse vendor payload
   std::vector<uint8_t> val(p + 4, p + len);
-  ntpserver::NtpVendorExt::Payload v{};
-  if (!ntpserver::NtpVendorExt::Parse(val, &v)) {
-    return result;
+  if (!ntpserver::NtpVendorExt::Parse(val, out_payload)) {
+    return false;
   }
 
   // Deduplicate by sequence number
-  if (v.seq <= last_seq_) {
+  if (out_payload->seq <= last_seq_) {
+    return false;
+  }
+  last_seq_ = out_payload->seq;
+
+  return true;
+}
+
+bool VendorHintProcessor::ApplyRateHint(
+    const ntpserver::NtpVendorExt::Payload& payload,
+    ntpserver::TimeSource* time_source) {
+  if ((payload.flags & ntpserver::NtpVendorExt::kFlagRate) == 0U) {
+    return false;
+  }
+
+  const double rate_eps = 1e-12;  // ~1e-6 ppm
+  double cur_rate = time_source->GetRate();
+  if (std::abs(payload.rate_scale - cur_rate) <= rate_eps) {
+    return false;
+  }
+
+  time_source->SetRate(payload.rate_scale);
+  return true;
+}
+
+bool VendorHintProcessor::ApplyAbsoluteHint(
+    const ntpserver::NtpVendorExt::Payload& payload,
+    ntpserver::TimeSource* time_source, double step_threshold_s,
+    double* out_step_amount) {
+  if ((payload.flags & ntpserver::NtpVendorExt::kFlagAbs) == 0U) {
+    return false;
+  }
+
+  double cur = time_source->NowUnix();
+  if (std::abs(payload.abs_unix_s - cur) < step_threshold_s) {
+    return false;
+  }
+
+  time_source->SetAbsolute(payload.abs_unix_s);
+  *out_step_amount = payload.abs_unix_s - cur;
+  return true;
+}
+
+VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
+    const std::vector<uint8_t>& rx_data, size_t ntp_packet_size,
+    ntpserver::TimeSource* time_source, double step_threshold_s) {
+  HintResult result;
+
+  ntpserver::NtpVendorExt::Payload payload{};
+  if (!ParseVendorPayload(rx_data, ntp_packet_size, &payload)) {
     return result;
   }
-  last_seq_ = v.seq;
 
   if (time_source == nullptr) {
     return result;
   }
 
-  // Apply rate change if flag is set and value differs
-  const double rate_eps = 1e-12;  // ~1e-6 ppm
-  if ((v.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U) {
-    double cur_rate = time_source->GetRate();
-    if (std::abs(v.rate_scale - cur_rate) > rate_eps) {
-      time_source->SetRate(v.rate_scale);
-      result.reset_needed = true;
-    }
+  if (ApplyRateHint(payload, time_source)) {
+    result.reset_needed = true;
   }
 
-  // Apply absolute time change if flag is set and value differs
-  if ((v.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U) {
-    double cur = time_source->NowUnix();
-    if (std::abs(v.abs_unix_s - cur) >= step_threshold_s) {
-      time_source->SetAbsolute(v.abs_unix_s);
-      result.reset_needed = true;
-      result.abs_applied = true;
-      result.step_amount_s = v.abs_unix_s - cur;
-    }
+  if (ApplyAbsoluteHint(payload, time_source, step_threshold_s,
+                        &result.step_amount_s)) {
+    result.reset_needed = true;
+    result.abs_applied = true;
   }
 
   return result;

@@ -160,6 +160,40 @@ struct ntpclock::ClockService::Impl {
                    std::vector<uint8_t>* out_response, std::string* err);
 
   /**
+   * @brief Build an NTP request packet.
+   *
+   * @param T1 Transmit timestamp (UNIX seconds).
+   * @return Raw NTP request packet bytes.
+   */
+  std::vector<uint8_t> BuildNtpRequest(double T1);
+
+  /**
+   * @brief Wait for exchange response with abort checking.
+   *
+   * @param timeout_ms Total timeout in milliseconds.
+   * @param out_msg Output message on success.
+   * @param err Output error message on failure.
+   * @return true if exchange response received, false on timeout/abort/push.
+   */
+  bool WaitForExchangeResponse(int timeout_ms,
+                               internal::UdpSocket::Message* out_msg,
+                               std::string* err);
+
+  /**
+   * @brief Process NTP response to compute offset and RTT.
+   *
+   * @param msg Received message.
+   * @param T1 Client transmit timestamp.
+   * @param out_offset_s Output computed offset.
+   * @param out_rtt_ms Output computed RTT.
+   * @param err Output error message on failure.
+   * @return true on success, false on parsing error.
+   */
+  bool ProcessNtpResponse(const internal::UdpSocket::Message& msg, double T1,
+                          double* out_offset_s, int* out_rtt_ms,
+                          std::string* err);
+
+  /**
    * @brief Result of vendor hint processing.
    */
   struct VendorHintResult {
@@ -167,20 +201,6 @@ struct ntpclock::ClockService::Impl {
     bool abs_applied = false;    ///< Whether SetAbsolute was applied
     double step_amount_s = 0.0;  ///< Step amount (if abs_applied)
   };
-
-  /**
-   * @brief Apply vendor hints and update internal state.
-   *
-   * Processes vendor hints, clears estimators if needed, and allows
-   * backward jumps for SetAbsolute.
-   *
-   * @param rx Raw datagram bytes (NTP header + optional extension fields).
-   * @param step_threshold_s Threshold for applying absolute time changes.
-   * @param allow_abort If true, sets exchange_abort flag when hints applied.
-   * @return VendorHintResult indicating what was applied.
-   */
-  VendorHintResult ApplyVendorHints(const std::vector<uint8_t>& rx,
-                                    double step_threshold_s, bool allow_abort);
 
   /**
    * @brief Parse NTP vendor extension from a received datagram and apply.
@@ -206,15 +226,35 @@ struct ntpclock::ClockService::Impl {
                          const Options& snapshot);
 
   /**
-   * @brief Build an NTP request packet.
+   * @brief Apply vendor hints and update internal state.
    *
-   * @param T1 Transmit timestamp (UNIX seconds).
-   * @return Raw NTP request packet bytes.
+   * Processes vendor hints, clears estimators if needed, and allows
+   * backward jumps for SetAbsolute.
+   *
+   * @param rx Raw datagram bytes (NTP header + optional extension fields).
+   * @param step_threshold_s Threshold for applying absolute time changes.
+   * @param allow_abort If true, sets exchange_abort flag when hints applied.
+   * @return VendorHintResult indicating what was applied.
    */
-  std::vector<uint8_t> BuildNtpRequest(double T1);
+  VendorHintResult ApplyVendorHints(const std::vector<uint8_t>& rx,
+                                    double step_threshold_s, bool allow_abort);
 
-  // Worker and helper methods
-  void Loop();
+  /**
+   * @brief Update estimators and compute target offset from valid sample.
+   *
+   * @return Tuple of (median, min, max) offset statistics.
+   */
+  std::tuple<double, double, double> UpdateEstimatorsAndTarget(
+      const Options& snapshot, double sample_offset_s, double tnow);
+
+  /**
+   * @brief Build base status with common fields.
+   *
+   * Sets common fields that appear in all status objects.
+   */
+  void SetBaseStatusFields(Status* st, const Options& snapshot,
+                           double sample_offset_s, int sample_rtt_ms,
+                           double tnow, int good_samples);
 
   /**
    * @brief Build status for vendor hint applied state.
@@ -228,23 +268,6 @@ struct ntpclock::ClockService::Impl {
                                       const VendorHintResult& hint_result);
 
   /**
-   * @brief Build base status with common fields.
-   *
-   * Sets common fields that appear in all status objects.
-   */
-  void SetBaseStatusFields(Status* st, const Options& snapshot,
-                           double sample_offset_s, int sample_rtt_ms,
-                           double tnow, int good_samples);
-
-  /**
-   * @brief Update estimators and compute target offset from valid sample.
-   *
-   * @return Tuple of (median, min, max) offset statistics.
-   */
-  std::tuple<double, double, double> UpdateEstimatorsAndTarget(
-      const Options& snapshot, double sample_offset_s, double tnow);
-
-  /**
    * @brief Build status for successful sample processing.
    */
   Status BuildSuccessStatus(const Options& snapshot, double sample_offset_s,
@@ -252,6 +275,36 @@ struct ntpclock::ClockService::Impl {
                             double median, double omin, double omax,
                             Status::Correction correction,
                             double correction_amount);
+
+  /**
+   * @brief Wait for Push message or poll deadline.
+   *
+   * @param next_poll_time Poll deadline time point.
+   * @param snapshot Options snapshot for HandlePushMessage.
+   * @return true if Push was received, false if poll deadline reached.
+   */
+  bool WaitForPushOrPollDeadline(
+      std::chrono::steady_clock::time_point next_poll_time,
+      const Options& snapshot);
+
+  /**
+   * @brief Execute Exchange, process vendor hints, and build Status.
+   *
+   * @param snapshot Options snapshot.
+   * @param step_thresh_s Step threshold in seconds.
+   * @param slew_rate_s_per_s Slew rate in seconds per second.
+   * @param poll_interval_ms Poll interval in milliseconds.
+   * @param good_samples Reference to good sample counter (incremented on
+   * success).
+   * @return Constructed Status object.
+   */
+  Status ProcessExchangeAndBuildStatus(const Options& snapshot,
+                                       double step_thresh_s,
+                                       double slew_rate_s_per_s,
+                                       int poll_interval_ms, int* good_samples);
+
+  // Worker and helper methods
+  void Loop();
 };
 
 namespace {
@@ -319,12 +372,39 @@ bool ntpclock::ClockService::Impl::UdpExchange(
     return false;
   }
 
-  // Wait for response with abort checking every 50ms
+  // Wait for response
+  internal::UdpSocket::Message msg;
+  if (!WaitForExchangeResponse(500, &msg, err)) {
+    return false;
+  }
+
+  // Process response
+  if (!ProcessNtpResponse(msg, T1, out_offset_s, out_rtt_ms, err)) {
+    return false;
+  }
+
+  *out_response = std::move(msg.data);
+  return true;
+}
+
+std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
+  NtpPacket req{};
+  std::memset(&req, 0, sizeof(req));
+  req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);  // v4, client
+
+  WriteTimestamp(T1, reinterpret_cast<uint8_t*>(&req.tx_timestamp));
+
+  std::vector<uint8_t> buf(sizeof(req));
+  std::memcpy(buf.data(), &req, sizeof(req));
+  return buf;
+}
+
+bool ntpclock::ClockService::Impl::WaitForExchangeResponse(
+    int timeout_ms, internal::UdpSocket::Message* out_msg, std::string* err) {
   const int kPollIntervalMs = 50;
-  const int kTotalTimeoutMs = 500;
   int elapsed_ms = 0;
 
-  while (elapsed_ms < kTotalTimeoutMs) {
+  while (elapsed_ms < timeout_ms) {
     // Check for abort signal
     if (exchange_abort.load(std::memory_order_relaxed)) {
       if (err) *err = "aborted by push";
@@ -332,40 +412,13 @@ bool ntpclock::ClockService::Impl::UdpExchange(
     }
 
     // Wait for message with short timeout
-    internal::UdpSocket::Message msg;
-    if (udp_socket.WaitMessage(kPollIntervalMs, &msg)) {
+    if (udp_socket.WaitMessage(kPollIntervalMs, out_msg)) {
       // Check message type
-      if (msg.type == internal::UdpSocket::MessageType::Push) {
+      if (out_msg->type == internal::UdpSocket::MessageType::Push) {
         // Push received during Exchange - abort
         if (err) *err = "push during exchange";
         return false;
       }
-
-      // Process Exchange response
-      double T4 = msg.recv_time;
-
-      if (msg.data.size() < sizeof(NtpPacket)) {
-        if (err) *err = "response too small";
-        return false;
-      }
-
-      // Parse NTP packet
-      NtpPacket resp{};
-      std::memcpy(&resp, msg.data.data(), sizeof(resp));
-
-      // Extract timestamps
-      double T2 =
-          ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
-      double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
-
-      // Compute offset and delay
-      double delay = (T4 - T1) - (T3 - T2);
-      double offset = ((T2 - T1) + (T3 - T4)) / 2.0;
-
-      // Return results
-      *out_offset_s = offset;
-      *out_rtt_ms = static_cast<int>(std::max(0.0, delay) * 1000.0 + 0.5);
-      *out_response = std::move(msg.data);
       return true;
     }
 
@@ -375,6 +428,45 @@ bool ntpclock::ClockService::Impl::UdpExchange(
   // Timeout
   if (err) *err = "recvfrom timeout/failure";
   return false;
+}
+
+bool ntpclock::ClockService::Impl::ProcessNtpResponse(
+    const internal::UdpSocket::Message& msg, double T1, double* out_offset_s,
+    int* out_rtt_ms, std::string* err) {
+  if (msg.data.size() < sizeof(NtpPacket)) {
+    if (err) *err = "response too small";
+    return false;
+  }
+
+  // Parse NTP packet
+  NtpPacket resp{};
+  std::memcpy(&resp, msg.data.data(), sizeof(resp));
+
+  // Extract timestamps
+  double T2 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
+  double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
+  double T4 = msg.recv_time;
+
+  // Compute offset and delay
+  double delay = (T4 - T1) - (T3 - T2);
+  double offset = ((T2 - T1) + (T3 - T4)) / 2.0;
+
+  *out_offset_s = offset;
+  *out_rtt_ms = static_cast<int>(std::max(0.0, delay) * 1000.0 + 0.5);
+  return true;
+}
+
+ntpclock::ClockService::Impl::VendorHintResult
+ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
+    const std::vector<uint8_t>& rx, const Options& snapshot) {
+  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
+  return ApplyVendorHints(rx, step_threshold_s, false);
+}
+
+void ntpclock::ClockService::Impl::HandlePushMessage(
+    const internal::UdpSocket::Message& msg, const Options& snapshot) {
+  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
+  ApplyVendorHints(msg.data, step_threshold_s, true);
 }
 
 ntpclock::ClockService::Impl::VendorHintResult
@@ -410,29 +502,22 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
   return hint_result;
 }
 
-ntpclock::ClockService::Impl::VendorHintResult
-ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
-    const std::vector<uint8_t>& rx, const Options& snapshot) {
-  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
-  return ApplyVendorHints(rx, step_threshold_s, false);
-}
+std::tuple<double, double, double>
+ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
+                                                        double sample_offset_s,
+                                                        double tnow) {
+  // Add sample to sliding window
+  int maxw = std::max(snapshot.OffsetWindow(), snapshot.SkewWindow());
+  estimator_state.AddSample(sample_offset_s, tnow, maxw);
 
-void ntpclock::ClockService::Impl::HandlePushMessage(
-    const internal::UdpSocket::Message& msg, const Options& snapshot) {
-  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
-  ApplyVendorHints(msg.data, step_threshold_s, true);
-}
+  // Compute robust target: median of last window, and min/max for debug
+  auto stats = estimator_state.ComputeOffsetStats(snapshot.OffsetWindow(),
+                                                  sample_offset_s);
+  double median = stats.median;
+  double omin = stats.min;
+  double omax = stats.max;
 
-std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
-  NtpPacket req{};
-  std::memset(&req, 0, sizeof(req));
-  req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);  // v4, client
-
-  WriteTimestamp(T1, reinterpret_cast<uint8_t*>(&req.tx_timestamp));
-
-  std::vector<uint8_t> buf(sizeof(req));
-  std::memcpy(buf.data(), &req, sizeof(req));
-  return buf;
+  return std::make_tuple(median, omin, omax);
 }
 
 void ntpclock::ClockService::Impl::SetBaseStatusFields(
@@ -465,24 +550,6 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
   return st;
 }
 
-std::tuple<double, double, double>
-ntpclock::ClockService::Impl::UpdateEstimatorsAndTarget(const Options& snapshot,
-                                                        double sample_offset_s,
-                                                        double tnow) {
-  // Add sample to sliding window
-  int maxw = std::max(snapshot.OffsetWindow(), snapshot.SkewWindow());
-  estimator_state.AddSample(sample_offset_s, tnow, maxw);
-
-  // Compute robust target: median of last window, and min/max for debug
-  auto stats = estimator_state.ComputeOffsetStats(snapshot.OffsetWindow(),
-                                                  sample_offset_s);
-  double median = stats.median;
-  double omin = stats.min;
-  double omax = stats.max;
-
-  return std::make_tuple(median, omin, omax);
-}
-
 ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
     const Options& snapshot, double sample_offset_s, int sample_rtt_ms,
     double tnow, int good_samples, double median, double omin, double omax,
@@ -507,9 +574,86 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
   return st;
 }
 
-void ntpclock::ClockService::Impl::Loop() {
-  // Loop until stopped; snapshot options each iteration for runtime changes.
+bool ntpclock::ClockService::Impl::WaitForPushOrPollDeadline(
+    std::chrono::steady_clock::time_point next_poll_time,
+    const Options& snapshot) {
+  auto now = std::chrono::steady_clock::now();
 
+  while (now < next_poll_time) {
+    auto remaining =
+        std::chrono::duration_cast<milliseconds>(next_poll_time - now);
+    int wait_ms = std::min(static_cast<int>(remaining.count()), 100);
+
+    if (wait_ms <= 0) break;
+
+    internal::UdpSocket::Message msg;
+    if (udp_socket.WaitMessage(wait_ms, &msg)) {
+      if (msg.type == internal::UdpSocket::MessageType::Push) {
+        HandlePushMessage(msg, snapshot);
+        return true;
+      }
+      // Ignore non-Push messages (unexpected Exchange responses)
+    }
+
+    now = std::chrono::steady_clock::now();
+  }
+
+  return false;
+}
+
+ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
+    const Options& snapshot, double step_thresh_s, double slew_rate_s_per_s,
+    int poll_interval_ms, int* good_samples) {
+  // Acquire NTP sample
+  double sample_offset_s = 0.0;
+  int sample_rtt_ms = 0;
+  std::vector<uint8_t> response;
+  std::string err;
+  bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &response, &err);
+
+  // Process vendor hint from response if available
+  VendorHintResult hint_result;
+  if (ok && response.size() > sizeof(NtpPacket)) {
+    hint_result = ApplyVendorHintFromRx(response, snapshot);
+  }
+
+  // Build status based on sample validity and vendor hint state
+  Status st_local;
+  double tnow = time_source ? time_source->NowUnix() : 0.0;
+
+  if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
+    // Vendor hint applied: skip normal correction
+    st_local =
+        BuildVendorHintAppliedStatus(snapshot, sample_offset_s, sample_rtt_ms,
+                                     tnow, *good_samples, hint_result);
+  } else if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
+    // Normal path: process sample and apply correction
+    auto [median, omin, omax] =
+        UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
+
+    double applied = offset_applied_s.load(std::memory_order_relaxed);
+    double correction_amount = 0.0;
+    Status::Correction correction =
+        clock_corrector.Apply(applied, median, step_thresh_s, slew_rate_s_per_s,
+                              poll_interval_ms / 1000.0, &correction_amount);
+
+    (*good_samples)++;
+    st_local = BuildSuccessStatus(snapshot, sample_offset_s, sample_rtt_ms,
+                                  tnow, *good_samples, median, omin, omax,
+                                  correction, correction_amount);
+  } else {
+    // Error path: sample acquisition failed or RTT exceeded threshold
+    st_local.synchronized = (*good_samples >= snapshot.MinSamplesToLock());
+    st_local.rtt_ms = sample_rtt_ms;
+    st_local.last_delay_s = sample_rtt_ms / 1000.0;
+    st_local.offset_s = sample_offset_s;
+    st_local.last_error = err.empty() ? "sample rejected" : err;
+  }
+
+  return st_local;
+}
+
+void ntpclock::ClockService::Impl::Loop() {
   int good_samples = 0;
   auto next_poll_time = std::chrono::steady_clock::now();
 
@@ -517,85 +661,25 @@ void ntpclock::ClockService::Impl::Loop() {
     // 1. Snapshot configuration for this iteration
     auto snapshot = [&]() {
       std::lock_guard<std::mutex> lk(opts_mtx);
-      return opts;  // copy
+      return opts;
     }();
     const double step_thresh_s = snapshot.StepThresholdMs() / 1000.0;
     const double slew_rate_s_per_s = snapshot.SlewRateMsPerSec() / 1000.0;
     const int poll_interval_ms = snapshot.PollIntervalMs();
 
     // 2. Wait for Push or poll deadline
-    auto now = std::chrono::steady_clock::now();
-
-    while (now < next_poll_time) {
-      auto remaining =
-          std::chrono::duration_cast<milliseconds>(next_poll_time - now);
-      int wait_ms = std::min(static_cast<int>(remaining.count()), 100);
-
-      if (wait_ms <= 0) break;
-
-      internal::UdpSocket::Message msg;
-      if (udp_socket.WaitMessage(wait_ms, &msg)) {
-        if (msg.type == internal::UdpSocket::MessageType::Push) {
-          HandlePushMessage(msg, snapshot);
-          break;
-        }
-        // Ignore non-Push messages (unexpected Exchange responses)
-      }
-
-      now = std::chrono::steady_clock::now();
-    }
+    WaitForPushOrPollDeadline(next_poll_time, snapshot);
 
     // Update next poll deadline
     next_poll_time =
         std::chrono::steady_clock::now() + milliseconds(poll_interval_ms);
 
-    // 3. Acquire NTP sample
-    double sample_offset_s = 0.0;
-    int sample_rtt_ms = 0;
-    std::vector<uint8_t> response;
-    std::string err;
-    bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &response, &err);
+    // 3. Execute Exchange and build status
+    Status st_local = ProcessExchangeAndBuildStatus(
+        snapshot, step_thresh_s, slew_rate_s_per_s, poll_interval_ms,
+        &good_samples);
 
-    // 3a. Process vendor hint from response if available
-    VendorHintResult hint_result;
-    if (ok && response.size() > sizeof(NtpPacket)) {
-      hint_result = ApplyVendorHintFromRx(response, snapshot);
-    }
-
-    // 4. Build status based on sample validity and vendor hint state
-    Status st_local;
-    double tnow = time_source ? time_source->NowUnix() : 0.0;
-
-    if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
-      // Vendor hint applied: skip normal correction
-      st_local =
-          BuildVendorHintAppliedStatus(snapshot, sample_offset_s, sample_rtt_ms,
-                                       tnow, good_samples, hint_result);
-    } else if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
-      // Normal path: process sample and apply correction
-      auto [median, omin, omax] =
-          UpdateEstimatorsAndTarget(snapshot, sample_offset_s, tnow);
-
-      double applied = offset_applied_s.load(std::memory_order_relaxed);
-      double correction_amount = 0.0;
-      Status::Correction correction = clock_corrector.Apply(
-          applied, median, step_thresh_s, slew_rate_s_per_s,
-          poll_interval_ms / 1000.0, &correction_amount);
-
-      good_samples++;
-      st_local = BuildSuccessStatus(snapshot, sample_offset_s, sample_rtt_ms,
-                                    tnow, good_samples, median, omin, omax,
-                                    correction, correction_amount);
-    } else {
-      // Error path: sample acquisition failed or RTT exceeded threshold
-      st_local.synchronized = (good_samples >= snapshot.MinSamplesToLock());
-      st_local.rtt_ms = sample_rtt_ms;
-      st_local.last_delay_s = sample_rtt_ms / 1000.0;
-      st_local.offset_s = sample_offset_s;
-      st_local.last_error = err.empty() ? "sample rejected" : err;
-    }
-
-    // 5. Update shared status (single location for all paths)
+    // 4. Update shared status
     {
       std::lock_guard<std::mutex> lk(status_mtx);
       status = st_local;
