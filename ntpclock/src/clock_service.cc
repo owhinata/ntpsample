@@ -167,16 +167,27 @@ struct ntpclock::ClockService::Impl {
     bool applied = false;        ///< Whether any hint was applied
     bool abs_applied = false;    ///< Whether SetAbsolute was applied
     double step_amount_s = 0.0;  ///< Step amount (if abs_applied)
-    double timestamp = 0.0;      ///< Timestamp when applied
   };
+
+  /**
+   * @brief Apply vendor hints and update internal state.
+   *
+   * Processes vendor hints, clears estimators if needed, and allows
+   * backward jumps for SetAbsolute.
+   *
+   * @param rx Raw datagram bytes (NTP header + optional extension fields).
+   * @param step_threshold_s Threshold for applying absolute time changes.
+   * @param allow_abort If true, sets exchange_abort flag when hints applied.
+   * @return VendorHintResult indicating what was applied.
+   */
+  VendorHintResult ApplyVendorHints(const std::vector<uint8_t>& rx,
+                                    double step_threshold_s, bool allow_abort);
 
   /**
    * @brief Parse NTP vendor extension from a received datagram and apply.
    *
    * @param rx Raw datagram bytes (NTP header + optional extension fields).
-   * @return VendorHintResult indicating what was applied and when.
-   * @note Applies SetRate/SetAbsolute when payload differences are meaningful,
-   *       and resets estimator windows accordingly. Does NOT update status.
+   * @return VendorHintResult indicating what was applied.
    */
   VendorHintResult ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
 
@@ -188,7 +199,7 @@ struct ntpclock::ClockService::Impl {
    * ongoing Exchange.
    *
    * @param msg Push message from UdpSocket.
-   * @param snapshot Options snapshot for threshold/interval values.
+   * @param snapshot Options snapshot for threshold values.
    */
   void HandlePushMessage(const internal::UdpSocket::Message& msg,
                          const Options& snapshot);
@@ -205,14 +216,23 @@ struct ntpclock::ClockService::Impl {
   void Loop();
 
   /**
-   * @brief Build status for inhibited state.
+   * @brief Build status for vendor hint applied state.
    *
    * Constructs Status with current sample info but no estimator updates.
-   * Used when step corrections are inhibited (vendor hints settling).
+   * Used when vendor hint was applied in the current loop iteration.
    */
   Status BuildInhibitedStatus(const Options& snapshot, double sample_offset_s,
                               int sample_rtt_ms, double tnow, int good_samples,
                               const VendorHintResult& hint_result);
+
+  /**
+   * @brief Build base status with common fields.
+   *
+   * Sets common fields that appear in all status objects.
+   */
+  void SetBaseStatusFields(Status* st, const Options& snapshot,
+                           double sample_offset_s, int sample_rtt_ms,
+                           double tnow, int good_samples);
 
   /**
    * @brief Update estimators and compute target offset from valid sample.
@@ -356,19 +376,13 @@ bool ntpclock::ClockService::Impl::UdpExchange(
 }
 
 ntpclock::ClockService::Impl::VendorHintResult
-ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
-    const std::vector<uint8_t>& rx) {
+ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
+                                               double step_threshold_s,
+                                               bool allow_abort) {
   VendorHintResult hint_result;
 
   auto ts = time_source;
   if (!ts) return hint_result;
-
-  // Get options snapshot
-  double step_threshold_s = 0.0;
-  {
-    std::lock_guard<std::mutex> lk(opts_mtx);
-    step_threshold_s = opts.StepThresholdMs() / 1000.0;
-  }
 
   // Process vendor hints
   auto result = vendor_hint_processor.ProcessAndApply(rx, sizeof(NtpPacket), ts,
@@ -376,45 +390,39 @@ ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
 
   // If reset is needed, clear estimator state
   if (result.reset_needed) {
+    if (allow_abort) {
+      exchange_abort.store(true, std::memory_order_relaxed);
+    }
     estimator_state.Clear();
     offset_applied_s.store(0.0, std::memory_order_relaxed);
 
     // If absolute time was set, allow backward jump
     if (result.abs_applied) {
       clock_corrector.AllowBackwardOnce();
-      hint_result.applied = true;
       hint_result.abs_applied = true;
       hint_result.step_amount_s = result.step_amount_s;
-      hint_result.timestamp = ts->NowUnix();
-    } else {
-      hint_result.applied = true;
     }
+    hint_result.applied = true;
   }
 
   return hint_result;
 }
 
+ntpclock::ClockService::Impl::VendorHintResult
+ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
+    const std::vector<uint8_t>& rx) {
+  double step_threshold_s = 0.0;
+  {
+    std::lock_guard<std::mutex> lk(opts_mtx);
+    step_threshold_s = opts.StepThresholdMs() / 1000.0;
+  }
+  return ApplyVendorHints(rx, step_threshold_s, false);
+}
+
 void ntpclock::ClockService::Impl::HandlePushMessage(
     const internal::UdpSocket::Message& msg, const Options& snapshot) {
-  auto ts = time_source;
-  if (!ts) return;
-
   double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
-
-  // Process vendor hints from Push message
-  auto result = vendor_hint_processor.ProcessAndApply(
-      msg.data, sizeof(NtpPacket), ts, step_threshold_s);
-
-  // If hints were applied (rate or abs change), signal Exchange abort
-  if (result.reset_needed) {
-    exchange_abort.store(true, std::memory_order_relaxed);
-    estimator_state.Clear();
-    offset_applied_s.store(0.0, std::memory_order_relaxed);
-
-    if (result.abs_applied) {
-      clock_corrector.AllowBackwardOnce();
-    }
-  }
+  ApplyVendorHints(msg.data, step_threshold_s, true);
 }
 
 std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
@@ -429,16 +437,23 @@ std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
   return buf;
 }
 
+void ntpclock::ClockService::Impl::SetBaseStatusFields(
+    Status* st, const Options& snapshot, double sample_offset_s,
+    int sample_rtt_ms, double tnow, int good_samples) {
+  st->synchronized = (good_samples >= snapshot.MinSamplesToLock());
+  st->rtt_ms = sample_rtt_ms;
+  st->last_delay_s = sample_rtt_ms / 1000.0;
+  st->offset_s = sample_offset_s;
+  st->last_update_unix_s = tnow;
+  st->last_error.clear();
+}
+
 ntpclock::Status ntpclock::ClockService::Impl::BuildInhibitedStatus(
     const Options& snapshot, double sample_offset_s, int sample_rtt_ms,
     double tnow, int good_samples, const VendorHintResult& hint_result) {
   Status st;
-  st.synchronized = (good_samples >= snapshot.MinSamplesToLock());
-  st.rtt_ms = sample_rtt_ms;
-  st.last_delay_s = sample_rtt_ms / 1000.0;
-  st.offset_s = sample_offset_s;
-  st.last_update_unix_s = tnow;
-  st.last_error.clear();
+  SetBaseStatusFields(&st, snapshot, sample_offset_s, sample_rtt_ms, tnow,
+                      good_samples);
 
   // Include vendor hint step correction if applied
   if (hint_result.abs_applied) {
@@ -475,11 +490,9 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
     double tnow, int good_samples, double median, double omin, double omax,
     Status::Correction correction, double correction_amount) {
   Status st;
-  st.synchronized = (good_samples >= snapshot.MinSamplesToLock());
-  st.rtt_ms = sample_rtt_ms;
-  st.last_delay_s = sample_rtt_ms / 1000.0;
-  st.offset_s = sample_offset_s;
-  st.last_update_unix_s = tnow;
+  SetBaseStatusFields(&st, snapshot, sample_offset_s, sample_rtt_ms, tnow,
+                      good_samples);
+
   st.skew_ppm = estimator_state.ComputeSkewPpm(snapshot.SkewWindow());
   st.samples = good_samples;
   st.offset_window = snapshot.OffsetWindow();
@@ -492,7 +505,6 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
   st.offset_target_s = median;
   st.last_correction = correction;
   st.last_correction_amount_s = correction_amount;
-  st.last_error.clear();
 
   return st;
 }
