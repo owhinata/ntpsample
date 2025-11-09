@@ -27,6 +27,19 @@ namespace {
 // On Windows consoles, enable ANSI escape processing for in-place refresh.
 #if defined(_WIN32)
 #include <windows.h>
+
+void ShowCur() { std::printf("\x1b[?25h"); std::fflush(stdout); }
+
+BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
+  // Handle Ctrl+C, Ctrl+Break, and console close events
+  if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT ||
+      ctrlType == CTRL_CLOSE_EVENT) {
+    ShowCur();
+    return FALSE;  // Allow default handler to terminate
+  }
+  return FALSE;
+}
+
 void EnableVirtualTerminal() {
   HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
   if (hOut == INVALID_HANDLE_VALUE) return;
@@ -44,6 +57,7 @@ int TermWidth() {
   return 120;
 }
 #else
+void ShowCur() { std::printf("\x1b[?25h"); std::fflush(stdout); }
 void EnableVirtualTerminal() {}
 int TermWidth() { return 120; }
 #endif
@@ -61,7 +75,6 @@ std::string OneLine(const std::string& s) {
   return out;
 }
 void HideCur() { std::printf("\x1b[?25l"); }
-void ShowCur() { std::printf("\x1b[?25h"); }
 void MoveRow(int row) { std::printf("\x1b[%d;1H", row); }
 static void AtExitShowCur() { ShowCur(); }
 void PrintUsage() {
@@ -124,6 +137,9 @@ int main(int argc, char** argv) {
   EnableVirtualTerminal();
   HideCur();
   std::atexit(AtExitShowCur);
+#if defined(_WIN32)
+  SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+#endif
 
   if (!svc.Start(ip, port, opt)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
