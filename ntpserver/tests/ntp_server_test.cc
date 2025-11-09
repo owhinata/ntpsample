@@ -4,6 +4,7 @@
 #include <ws2tcpip.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <thread>
@@ -61,6 +62,17 @@ class FakeTimeSource : public TimeSource {
   void SetRate(double rate) override {
     // No-op for tests; could emulate rate if needed.
     (void)rate;
+  }
+  void SetAbsoluteAndRate(double unix_sec, double rate) override {
+    // Just set absolute; rate is not emulated in tests
+    value_.store(unix_sec);
+    (void)rate;
+  }
+  void ResetToRealTime() override {
+    // Reset to current system time
+    value_.store(std::chrono::duration<double>(
+                     std::chrono::system_clock::now().time_since_epoch())
+                     .count());
   }
   double GetRate() const override { return 1.0; }
   void Set(double t) { value_.store(t); }

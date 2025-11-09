@@ -1,9 +1,9 @@
 // Copyright (c) 2025 <Your Name>
 /**
- * Adjustable time source (rate + offset).
+ * Adjustable time source with rate and absolute time control.
  *
  * Provides a UNIX-seconds clock derived from QPC. You can adjust the
- * progression rate and apply an absolute or relative offset for testing.
+ * progression rate and set absolute time for testing.
  */
 #pragma once
 
@@ -28,29 +28,32 @@ class QpcClock : public TimeSource {
   void SetRate(double rate) override;
   /** Gets progression rate. */
   double GetRate() const override;
-  /** Adds a relative offset in seconds to the current time. */
-  void AdjustOffset(double delta);
   /** Sets absolute time in UNIX seconds. */
   void SetAbsolute(double unix_sec) override;
+  /** Atomically sets both absolute time and rate. */
+  void SetAbsoluteAndRate(double unix_sec, double rate) override;
+  /** Resets to real-time (system clock) with rate 1.0. */
+  void ResetToRealTime() override;
 
   /** Singleton accessor for convenience. */
   static QpcClock& Instance();
 
  private:
-  /** Seconds elapsed since construction measured via QPC. */
+  /** Seconds elapsed since last anchor point (qpc_t0_) measured via QPC. */
   double Elapsed() const;
   /** Current wall-clock UNIX seconds (system_clock). */
   static double CurrentUnix();
 
   // We avoid Windows types in header to keep it portable.
-  /** QPC value captured at construction. */
+  /** QPC value at anchor point (updated by
+   * SetAbsolute/SetRate/SetAbsoluteAndRate). */
   int64_t qpc_t0_;
   /** QPC frequency (counts per second). */
   double qpc_freq_;
-  /** Wall-clock UNIX seconds at construction. */
+  /** UNIX seconds at anchor point (qpc_t0_). */
   double start_unix_;
+  /** Progression rate multiplier. */
   double rate_;
-  double offset_;
   mutable std::mutex mtx_;
 };
 

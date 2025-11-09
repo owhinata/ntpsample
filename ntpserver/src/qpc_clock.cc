@@ -16,13 +16,8 @@ QpcClock::QpcClock() {
   QueryPerformanceFrequency(&f);
   qpc_freq_ = static_cast<double>(f.QuadPart);
 
-  LARGE_INTEGER t0{};
-  QueryPerformanceCounter(&t0);
-  qpc_t0_ = static_cast<int64_t>(t0.QuadPart);
-
-  start_unix_ = CurrentUnix();
-  rate_ = 1.0;
-  offset_ = 0.0;
+  // Initialize to real-time with rate 1.0
+  ResetToRealTime();
 }
 
 double QpcClock::CurrentUnix() {
@@ -39,22 +34,63 @@ double QpcClock::Elapsed() const {
 
 double QpcClock::NowUnix() {
   std::lock_guard<std::mutex> lk(mtx_);
-  return start_unix_ + rate_ * Elapsed() + offset_;
+  return start_unix_ + rate_ * Elapsed();
 }
 
-void QpcClock::SetRate(double rate) {
+void QpcClock::SetRate(double new_rate) {
   std::lock_guard<std::mutex> lk(mtx_);
-  rate_ = rate;
-}
 
-void QpcClock::AdjustOffset(double delta) {
-  std::lock_guard<std::mutex> lk(mtx_);
-  offset_ += delta;
+  // Get current QPC once
+  LARGE_INTEGER t{};
+  QueryPerformanceCounter(&t);
+  int64_t qpc_now = static_cast<int64_t>(t.QuadPart);
+
+  // Calculate current time (without calling Elapsed() to avoid second QPC call)
+  double elapsed = (qpc_now - qpc_t0_) / qpc_freq_;
+  double now = start_unix_ + rate_ * elapsed;
+
+  // Update anchor point
+  qpc_t0_ = qpc_now;
+  start_unix_ = now;
+  rate_ = new_rate;
 }
 
 void QpcClock::SetAbsolute(double unix_sec) {
   std::lock_guard<std::mutex> lk(mtx_);
-  offset_ = unix_sec - (start_unix_ + rate_ * Elapsed());
+
+  // Get current QPC once
+  LARGE_INTEGER t{};
+  QueryPerformanceCounter(&t);
+  qpc_t0_ = static_cast<int64_t>(t.QuadPart);
+
+  // Update anchor point (rate unchanged)
+  start_unix_ = unix_sec;
+}
+
+void QpcClock::SetAbsoluteAndRate(double unix_sec, double new_rate) {
+  std::lock_guard<std::mutex> lk(mtx_);
+
+  // Get current QPC once
+  LARGE_INTEGER t{};
+  QueryPerformanceCounter(&t);
+  qpc_t0_ = static_cast<int64_t>(t.QuadPart);
+
+  // Update anchor point atomically
+  start_unix_ = unix_sec;
+  rate_ = new_rate;
+}
+
+void QpcClock::ResetToRealTime() {
+  std::lock_guard<std::mutex> lk(mtx_);
+
+  // Get current QPC once
+  LARGE_INTEGER t{};
+  QueryPerformanceCounter(&t);
+  qpc_t0_ = static_cast<int64_t>(t.QuadPart);
+
+  // Reset to current system time with rate 1.0
+  start_unix_ = CurrentUnix();
+  rate_ = 1.0;
 }
 
 double QpcClock::GetRate() const {

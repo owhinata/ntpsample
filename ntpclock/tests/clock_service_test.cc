@@ -69,6 +69,18 @@ class FakeTimeSource : public ntpserver::TimeSource {
     start_tp_ = std::chrono::steady_clock::now();
   }
   void SetRate(double rate) override { (void)rate; }
+  void SetAbsoluteAndRate(double unix_sec, double rate) override {
+    // Just set absolute; rate is not emulated in tests
+    SetAbsolute(unix_sec);
+    (void)rate;
+  }
+  void ResetToRealTime() override {
+    // Reset to current system time
+    start_unix_ = std::chrono::duration<double>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+    start_tp_ = std::chrono::steady_clock::now();
+  }
   void Adjust(double delta) { SetAbsolute(NowUnix() + delta); }
 
  private:

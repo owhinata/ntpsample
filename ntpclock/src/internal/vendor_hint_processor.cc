@@ -95,14 +95,38 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
     return result;
   }
 
-  if (ApplyRateHint(payload, time_source)) {
-    result.reset_needed = true;
-  }
+  bool has_abs = (payload.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U;
+  bool has_rate = (payload.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U;
 
-  if (ApplyAbsoluteHint(payload, time_source, step_threshold_s,
-                        &result.step_amount_s)) {
-    result.reset_needed = true;
-    result.abs_applied = true;
+  // Atomic update when both abs and rate are present
+  if (has_abs && has_rate) {
+    const double rate_eps = 1e-12;  // ~1e-6 ppm
+    double cur_rate = time_source->GetRate();
+    double cur_abs = time_source->NowUnix();
+
+    bool rate_changed = std::abs(payload.rate_scale - cur_rate) > rate_eps;
+    bool abs_changed =
+        std::abs(payload.abs_unix_s - cur_abs) >= step_threshold_s;
+
+    if (rate_changed || abs_changed) {
+      time_source->SetAbsoluteAndRate(payload.abs_unix_s, payload.rate_scale);
+      result.reset_needed = true;
+      if (abs_changed) {
+        result.abs_applied = true;
+        result.step_amount_s = payload.abs_unix_s - cur_abs;
+      }
+    }
+  } else {
+    // Apply individually if only one is present
+    if (ApplyRateHint(payload, time_source)) {
+      result.reset_needed = true;
+    }
+
+    if (ApplyAbsoluteHint(payload, time_source, step_threshold_s,
+                          &result.step_amount_s)) {
+      result.reset_needed = true;
+      result.abs_applied = true;
+    }
   }
 
   return result;

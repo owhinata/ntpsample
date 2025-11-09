@@ -12,10 +12,11 @@
 
 namespace {
 void PrintUsage() {
-  std::fprintf(stderr,
-               "Usage: ntpserver_example [--port N] [--rate R] [--abs SEC]\n"
-               "       Commands on stdin: help | now | rate R | abs SEC | add "
-               "SEC | quit\n");
+  std::fprintf(
+      stderr,
+      "Usage: ntpserver_example [--port N] [--rate R] [--abs SEC]\n"
+      "       Commands on stdin: help | now | rate R | abs SEC | add SEC | "
+      "reset | quit\n");
 }
 }  // namespace
 
@@ -55,7 +56,8 @@ int main(int argc, char** argv) {
   }
   std::printf("ntp server running on UDP %u\n", port);
   std::printf(
-      "stdin commands: help | now | rate R | abs SEC | add SEC | quit\n");
+      "stdin commands: help | now | rate R | abs SEC | add SEC | reset | "
+      "quit\n");
 
   // Control loop on stdin
   char line[256];
@@ -107,6 +109,18 @@ int main(int argc, char** argv) {
       std::printf(
           "offset adjusted by %+f (notify) before=%.6f after=%.6f delta=%.6f\n",
           d, before, after, after - before);
+      continue;
+    }
+    if (std::strcmp(line, "reset") == 0) {
+      double before = ts.NowUnix();
+      double rate_before = ts.GetRate();
+      ts.ResetToRealTime();
+      server.NotifyControlSnapshot();
+      double after = ts.NowUnix();
+      std::printf(
+          "reset to real-time (notify) before=%.6f (rate=%.6f) "
+          "after=%.6f (rate=1.0)\n",
+          before, rate_before, after);
       continue;
     }
     std::fprintf(stderr, "unknown command: %s\n", line);
