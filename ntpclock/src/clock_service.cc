@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include <numeric>
 #include <string>
 #include <thread>
 #include <tuple>

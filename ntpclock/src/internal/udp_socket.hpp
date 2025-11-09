@@ -7,11 +7,9 @@
  * vs Push notification), and thread-safe message queueing for asynchronous
  * server-initiated notifications.
  */
-#ifndef NTPCLOCK_INTERNAL_UDP_SOCKET_HPP_
-#define NTPCLOCK_INTERNAL_UDP_SOCKET_HPP_
+#pragma once
 
 #include <winsock2.h>
-#include <ws2tcpip.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -145,5 +143,3 @@ class UdpSocket {
 
 }  // namespace internal
 }  // namespace ntpclock
-
-#endif  // NTPCLOCK_INTERNAL_UDP_SOCKET_HPP_

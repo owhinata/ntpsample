@@ -7,8 +7,7 @@
  * time progression with coordinated backward jump allowance after steps.
  */
 
-#ifndef NTPCLOCK_INTERNAL_CLOCK_CORRECTOR_HPP_
-#define NTPCLOCK_INTERNAL_CLOCK_CORRECTOR_HPP_
+#pragma once
 
 #include <algorithm>
 #include <atomic>
@@ -137,5 +136,3 @@ class ClockCorrector {
 
 }  // namespace internal
 }  // namespace ntpclock
-
-#endif  // NTPCLOCK_INTERNAL_CLOCK_CORRECTOR_HPP_

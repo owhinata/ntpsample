@@ -9,8 +9,7 @@
  * (OLS regression) computations.
  */
 
-#ifndef NTPCLOCK_INTERNAL_SYNC_ESTIMATOR_STATE_HPP_
-#define NTPCLOCK_INTERNAL_SYNC_ESTIMATOR_STATE_HPP_
+#pragma once
 
 #include <algorithm>
 #include <cstddef>
@@ -181,5 +180,3 @@ class SyncEstimatorState {
 
 }  // namespace internal
 }  // namespace ntpclock
-
-#endif  // NTPCLOCK_INTERNAL_SYNC_ESTIMATOR_STATE_HPP_

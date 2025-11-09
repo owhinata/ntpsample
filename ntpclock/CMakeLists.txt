@@ -15,7 +15,7 @@ file(GLOB NTPCLK_HEADERS CONFIGURE_DEPENDS
 )
 set(NTPCLK_SOURCES
   src/clock_service.cc
-  src/internal/udp_socket.cpp
+  src/internal/udp_socket.cc
 )
 
 if(NTP_CLOCK_BUILD_SHARED)

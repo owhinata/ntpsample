@@ -7,14 +7,13 @@
  * specifically handling SetRate and SetAbsolute hints.
  */
 
-#ifndef NTPCLOCK_INTERNAL_VENDOR_HINT_PROCESSOR_HPP_
-#define NTPCLOCK_INTERNAL_VENDOR_HINT_PROCESSOR_HPP_
+#pragma once
 
 #include <cstdint>
 #include <vector>
 
 #include "ntpserver/ntp_extension.hpp"
-#include "ntpserver/qpc_clock.hpp"
+#include "ntpserver/time_source.hpp"
 
 namespace ntpclock {
 namespace internal {
@@ -125,5 +124,3 @@ class VendorHintProcessor {
 
 }  // namespace internal
 }  // namespace ntpclock
-
-#endif  // NTPCLOCK_INTERNAL_VENDOR_HINT_PROCESSOR_HPP_
