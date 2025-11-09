@@ -23,14 +23,16 @@ class NTP_SERVER_API NtpServer {
   NtpServer(const NtpServer&) = delete;
   NtpServer& operator=(const NtpServer&) = delete;
 
-  /** Starts serving on the given UDP port (default: 9123). */
-  bool Start(uint16_t port = 9123);
+  /**
+   * @brief Starts serving on the given UDP port.
+   * @param port UDP port to bind (default: 9123).
+   * @param time_source Time source for timestamps (default: QpcClock).
+   * @return true on success, false on failure.
+   */
+  bool Start(uint16_t port = 9123, TimeSource* time_source = nullptr);
 
   /** Stops the server. Safe to call multiple times. */
   void Stop();
-
-  /** Sets an external time source used for timestamps. */
-  void SetTimeSource(TimeSource* src);
 
   /** Sets stratum (default 1). */
   void SetStratum(uint8_t stratum);

@@ -4,7 +4,7 @@
  *
  * Usage:
  *   ntpclock_example --ip 127.0.0.1 --port 9123 \
- *     --poll 1000 --step 200 --slew 5.0 --max-rtt 100 \
+ *     --poll 10000 --step 200 --slew 5.0 --max-rtt 100 \
  *     --offset-window 5 --skew-window 10
  */
 
@@ -83,7 +83,7 @@ void PrintUsage() {
                "Options:\n"
                "  --ip A.B.C.D         (default 127.0.0.1)\n"
                "  --port N             (default 9123)\n"
-               "  --poll ms            (default 1000)\n"
+               "  --poll ms            (default 10000)\n"
                "  --step ms            (default 200)\n"
                "  --slew ms_per_s      (default 5.0)\n"
                "  --max-rtt ms         (default 100)\n"

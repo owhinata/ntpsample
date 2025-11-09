@@ -123,8 +123,7 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
   FakeTimeSource client_ts(now);
 
   ntpserver::NtpServer server;
-  server.SetTimeSource(&server_ts);
-  ASSERT_TRUE(server.Start(29333));
+  ASSERT_TRUE(server.Start(29333, &server_ts));
   std::this_thread::sleep_for(milliseconds(50));
 
   ClockService svc;
@@ -170,8 +169,7 @@ TEST(ClockServiceTest, StepAllowsBackwardOnce) {
   FakeTimeSource client_ts(now);
 
   ntpserver::NtpServer server;
-  server.SetTimeSource(&server_ts);
-  ASSERT_TRUE(server.Start(29334));
+  ASSERT_TRUE(server.Start(29334, &server_ts));
   std::this_thread::sleep_for(milliseconds(50));
 
   ClockService svc;

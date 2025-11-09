@@ -38,7 +38,7 @@ using std::chrono::milliseconds;
 
 // ---------------- Options ----------------
 ntpclock::Options::Builder::Builder()
-    : poll_interval_ms_(1000),
+    : poll_interval_ms_(10000),
       step_threshold_ms_(200),
       slew_rate_ms_per_s_(5.0),
       max_rtt_ms_(100),
@@ -651,6 +651,7 @@ void ntpclock::ClockService::Impl::Loop() {
     const int poll_interval_ms = snapshot.PollIntervalMs();
 
     // 2. Wait for Push or poll deadline
+    // If Push is received, returns immediately for instant Exchange execution
     WaitForPushOrPollDeadline(next_poll_time, snapshot);
 
     // Update next poll deadline

@@ -76,9 +76,13 @@ class NtpServer::Impl {
   Impl() = default;
   ~Impl() { Stop(); }
 
-  bool Start(uint16_t port) {
+  bool Start(uint16_t port, TimeSource* time_source) {
     std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (running_.load()) return true;
+
+    // Set time source (use QpcClock if nullptr)
+    time_source_ = time_source;
+
     if (!InitializeWinsock()) return false;
     if (!CreateAndBindSocket(port)) {
       CleanupWinsock();
@@ -105,7 +109,6 @@ class NtpServer::Impl {
     CleanupWinsock();
   }
 
-  void SetTimeSource(TimeSource* src) { time_source_ = src; }
   void SetStratum(uint8_t s) { stratum_ = s; }
   void SetPrecision(int8_t p) { precision_ = p; }
   void SetRefId(uint32_t ref_be) { ref_id_be_ = ref_be; }
@@ -122,20 +125,13 @@ class NtpServer::Impl {
     std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
-    // prune and send
-    TimeSpec cutoff_offset = TimeSpec::FromDouble(60.0);
-    TimeSpec cutoff = now - cutoff_offset;
+    // Send to all clients without pruning
+    // Pruning based on absolute time is problematic when time jumps
     auto& clients = client_tracker_.GetAllMutable();
-    auto it = clients.begin();
-    while (it != clients.end()) {
-      if (it->last_seen < cutoff) {
-        it = clients.erase(it);
-        continue;
-      }
+    for (auto& client : clients) {
       sendto(sock_, reinterpret_cast<const char*>(buf.data()),
              static_cast<int>(buf.size()), 0,
-             reinterpret_cast<sockaddr*>(&it->addr), sizeof(it->addr));
-      ++it;
+             reinterpret_cast<sockaddr*>(&client.addr), sizeof(client.addr));
     }
   }
 
@@ -327,9 +323,10 @@ class NtpServer::Impl {
 NtpServer::NtpServer() : impl_(new Impl) {}
 NtpServer::~NtpServer() = default;
 
-bool NtpServer::Start(uint16_t port) { return impl_->Start(port); }
+bool NtpServer::Start(uint16_t port, TimeSource* time_source) {
+  return impl_->Start(port, time_source);
+}
 void NtpServer::Stop() { impl_->Stop(); }
-void NtpServer::SetTimeSource(TimeSource* src) { impl_->SetTimeSource(src); }
 void NtpServer::SetStratum(uint8_t s) { impl_->SetStratum(s); }
 void NtpServer::SetPrecision(int8_t p) { impl_->SetPrecision(p); }
 void NtpServer::SetRefId(uint32_t ref_id_be) { impl_->SetRefId(ref_id_be); }

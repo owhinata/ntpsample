@@ -49,9 +49,8 @@ int main(int argc, char** argv) {
   ts.SetRate(init_rate);
   if (init_abs != 0.0)
     ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));
-  server.SetTimeSource(&ts);
 
-  if (!server.Start(port)) {
+  if (!server.Start(port, &ts)) {
     std::fprintf(stderr, "failed to start ntp server\n");
     return 1;
   }

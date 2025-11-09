@@ -114,10 +114,9 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
 
   FakeTimeSource ts(1700000000.25);  // fixed test time
   NtpServer server;
-  server.SetTimeSource(&ts);
   server.SetStratum(1);
   server.SetPrecision(-20);
-  ASSERT_TRUE(server.Start(29123));
+  ASSERT_TRUE(server.Start(29123, &ts));
 
   // Small delay to ensure server thread enters recv loop.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
