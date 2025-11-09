@@ -29,8 +29,6 @@
 #include <vector>
 
 #include "internal/clock_corrector.hpp"
-#include "internal/offset_estimator.hpp"
-#include "internal/skew_estimator.hpp"
 #include "internal/sync_estimator_state.hpp"
 #include "internal/udp_socket.hpp"
 #include "internal/vendor_hint_processor.hpp"
@@ -134,9 +132,6 @@ std::ostream& operator<<(std::ostream& os, const Status& s) {
 
 // ---------------- Impl ----------------
 struct ntpclock::ClockService::Impl {
-  std::string ip;
-  uint16_t port = 0;
-
   // TimeSource is immutable during execution (set at Start, cleared at Stop)
   ntpserver::TimeSource* time_source = nullptr;
 
@@ -370,16 +365,14 @@ ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
 
   // Get options snapshot
   double step_threshold_s = 0.0;
-  double poll_interval_s = 1.0;
   {
     std::lock_guard<std::mutex> lk(opts_mtx);
     step_threshold_s = opts.StepThresholdMs() / 1000.0;
-    poll_interval_s = opts.PollIntervalMs() / 1000.0;
   }
 
-  // Process vendor hints (automatically inhibits step corrections)
-  auto result = vendor_hint_processor.ProcessAndApply(
-      rx, sizeof(NtpPacket), ts, step_threshold_s, poll_interval_s);
+  // Process vendor hints
+  auto result = vendor_hint_processor.ProcessAndApply(rx, sizeof(NtpPacket), ts,
+                                                      step_threshold_s);
 
   // If reset is needed, clear estimator state
   if (result.reset_needed) {
@@ -407,11 +400,10 @@ void ntpclock::ClockService::Impl::HandlePushMessage(
   if (!ts) return;
 
   double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
-  double poll_interval_s = snapshot.PollIntervalMs() / 1000.0;
 
   // Process vendor hints from Push message
   auto result = vendor_hint_processor.ProcessAndApply(
-      msg.data, sizeof(NtpPacket), ts, step_threshold_s, poll_interval_s);
+      msg.data, sizeof(NtpPacket), ts, step_threshold_s);
 
   // If hints were applied (rate or abs change), signal Exchange abort
   if (result.reset_needed) {
@@ -523,7 +515,6 @@ void ntpclock::ClockService::Impl::Loop() {
 
     // 2. Wait for Push or poll deadline
     auto now = std::chrono::steady_clock::now();
-    bool push_triggered = false;
 
     while (now < next_poll_time) {
       auto remaining =
@@ -536,7 +527,6 @@ void ntpclock::ClockService::Impl::Loop() {
       if (udp_socket.WaitMessage(wait_ms, &msg)) {
         if (msg.type == internal::UdpSocket::MessageType::Push) {
           HandlePushMessage(msg, snapshot);
-          push_triggered = true;
           break;
         }
         // Ignore non-Push messages (unexpected Exchange responses)
@@ -562,14 +552,12 @@ void ntpclock::ClockService::Impl::Loop() {
       hint_result = ApplyVendorHintFromRx(response);
     }
 
-    // 4. Build status based on sample validity and inhibition state
+    // 4. Build status based on sample validity and vendor hint state
     Status st_local;
     double tnow = time_source ? time_source->NowUnix() : 0.0;
-    bool is_inhibited =
-        hint_result.applied || vendor_hint_processor.IsStepInhibited(tnow);
 
-    if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && is_inhibited) {
-      // Inhibited path: vendor hint applied or settling from previous hint
+    if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
+      // Inhibited path: vendor hint was applied in this loop iteration
       st_local = BuildInhibitedStatus(snapshot, sample_offset_s, sample_rtt_ms,
                                       tnow, good_samples, hint_result);
     } else if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
@@ -614,8 +602,6 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   if (!time_source) return false;
 
   Stop();
-  p_->ip = ip;
-  p_->port = port;
   p_->time_source = time_source;
 
   {
