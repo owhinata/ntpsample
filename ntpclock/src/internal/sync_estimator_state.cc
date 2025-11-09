@@ -17,12 +17,12 @@ void SyncEstimatorState::AddSample(double offset_s, double time_s,
   int maxw = std::max(1, max_window);
   size_t max_size = static_cast<size_t>(maxw);
 
-  // Trim oldest samples if window exceeded
+  // Trim oldest samples if window exceeded (O(1) with deque)
   while (offsets_.size() > max_size) {
-    offsets_.erase(offsets_.begin());
+    offsets_.pop_front();
   }
   while (times_.size() > max_size) {
-    times_.erase(times_.begin());
+    times_.pop_front();
   }
 }
 

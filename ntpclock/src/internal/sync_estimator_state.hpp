@@ -3,7 +3,7 @@
  * @file
  * @brief Sliding window data management for clock sync estimators.
  *
- * Maintains offset and time sample vectors for offset and skew estimation,
+ * Maintains offset and time sample deques for offset and skew estimation,
  * providing thread-safe access and automatic window size management.
  * Integrates offset statistics (median, min, max) and skew estimation
  * (OLS regression) computations.
@@ -11,8 +11,8 @@
 
 #pragma once
 
+#include <deque>
 #include <mutex>
-#include <vector>
 
 namespace ntpclock {
 namespace internal {
@@ -99,8 +99,8 @@ class SyncEstimatorState {
 
  private:
   mutable std::mutex mtx_;
-  std::vector<double> offsets_;
-  std::vector<double> times_;
+  std::deque<double> offsets_;
+  std::deque<double> times_;
 };
 
 }  // namespace internal
