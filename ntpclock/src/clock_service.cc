@@ -11,10 +11,15 @@
 
 #include "ntpclock/clock_service.hpp"
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <numeric>
 #include <string>
@@ -24,10 +29,10 @@
 #include <vector>
 
 #include "internal/clock_corrector.hpp"
-#include "internal/ntp_client.hpp"
 #include "internal/offset_estimator.hpp"
 #include "internal/skew_estimator.hpp"
 #include "internal/sync_estimator_state.hpp"
+#include "internal/udp_socket.hpp"
 #include "internal/vendor_hint_processor.hpp"
 #include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/qpc_clock.hpp"
@@ -154,6 +159,9 @@ struct ntpclock::ClockService::Impl {
   internal::SyncEstimatorState estimator_state;
 
   // Networking
+  internal::UdpSocket udp_socket;
+  std::atomic<bool> exchange_abort{false};
+
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms,
                    std::vector<uint8_t>* out_response, std::string* err);
 
@@ -176,6 +184,27 @@ struct ntpclock::ClockService::Impl {
    *       and resets estimator windows accordingly. Does NOT update status.
    */
   VendorHintResult ApplyVendorHintFromRx(const std::vector<uint8_t>& rx);
+
+  /**
+   * @brief Handle a Push notification message.
+   *
+   * Processes vendor hints from a server-initiated Push message. If hints
+   * are applied (e.g., rate change), sets exchange_abort to interrupt any
+   * ongoing Exchange.
+   *
+   * @param msg Push message from UdpSocket.
+   * @param snapshot Options snapshot for threshold/interval values.
+   */
+  void HandlePushMessage(const internal::UdpSocket::Message& msg,
+                         const Options& snapshot);
+
+  /**
+   * @brief Build an NTP request packet.
+   *
+   * @param T1 Transmit timestamp (UNIX seconds).
+   * @return Raw NTP request packet bytes.
+   */
+  std::vector<uint8_t> BuildNtpRequest(double T1);
 
   // Worker and helper methods
   void Loop();
@@ -209,6 +238,8 @@ struct ntpclock::ClockService::Impl {
 };
 
 namespace {
+constexpr uint32_t kNtpUnixEpochDiff = 2208988800UL;
+
 #pragma pack(push, 1)
 struct NtpPacket {
   uint8_t li_vn_mode;
@@ -224,26 +255,109 @@ struct NtpPacket {
   uint64_t tx_timestamp;
 };
 #pragma pack(pop)
+
+/** Write UNIX timestamp to NTP timestamp (64-bit big-endian). */
+inline void WriteTimestamp(double unix_seconds, uint8_t* dst8) {
+  uint32_t sec =
+      static_cast<uint32_t>(std::floor(unix_seconds + kNtpUnixEpochDiff));
+  double frac_d = (unix_seconds + kNtpUnixEpochDiff) - static_cast<double>(sec);
+  uint32_t frac =
+      static_cast<uint32_t>(frac_d * static_cast<double>(1ULL << 32));
+  uint32_t sec_be = htonl(sec);
+  uint32_t frac_be = htonl(frac);
+  std::memcpy(dst8 + 0, &sec_be, 4);
+  std::memcpy(dst8 + 4, &frac_be, 4);
+}
+
+/** Read NTP timestamp (64-bit big-endian) to UNIX timestamp. */
+inline double ReadTimestamp(const uint8_t* src8) {
+  uint32_t sec_be = 0, frac_be = 0;
+  std::memcpy(&sec_be, src8 + 0, 4);
+  std::memcpy(&frac_be, src8 + 4, 4);
+  uint32_t sec = ntohl(sec_be);
+  uint32_t frac = ntohl(frac_be);
+  return (static_cast<double>(sec) - static_cast<double>(kNtpUnixEpochDiff)) +
+         (static_cast<double>(frac) / static_cast<double>(1ULL << 32));
+}
 }  // namespace
 
 bool ntpclock::ClockService::Impl::UdpExchange(
     double* out_offset_s, int* out_rtt_ms, std::vector<uint8_t>* out_response,
     std::string* err) {
-  auto get_timestamp = [this]() {
-    return time_source ? time_source->NowUnix() : 0.0;
-  };
-
-  auto result = internal::NtpClient::Exchange(ip, port, get_timestamp);
-
-  if (!result.success) {
-    if (err) *err = result.error;
+  if (!udp_socket.IsOpen()) {
+    if (err) *err = "socket not open";
     return false;
   }
 
-  *out_offset_s = result.offset_s;
-  *out_rtt_ms = result.rtt_ms;
-  *out_response = std::move(result.response_bytes);
-  return true;
+  // Reset abort flag
+  exchange_abort.store(false, std::memory_order_relaxed);
+
+  // Get transmit timestamp (T1) and build request
+  double T1 = time_source ? time_source->NowUnix() : 0.0;
+  std::vector<uint8_t> req = BuildNtpRequest(T1);
+
+  // Send request
+  if (!udp_socket.Send(req)) {
+    if (err) *err = "send failed";
+    return false;
+  }
+
+  // Wait for response with abort checking every 50ms
+  const int kPollIntervalMs = 50;
+  const int kTotalTimeoutMs = 500;
+  int elapsed_ms = 0;
+
+  while (elapsed_ms < kTotalTimeoutMs) {
+    // Check for abort signal
+    if (exchange_abort.load(std::memory_order_relaxed)) {
+      if (err) *err = "aborted by push";
+      return false;
+    }
+
+    // Wait for message with short timeout
+    internal::UdpSocket::Message msg;
+    if (udp_socket.WaitMessage(kPollIntervalMs, &msg)) {
+      // Check message type
+      if (msg.type == internal::UdpSocket::MessageType::Push) {
+        // Push received during Exchange - abort
+        if (err) *err = "push during exchange";
+        return false;
+      }
+
+      // Process Exchange response
+      double T4 = msg.recv_time;
+
+      if (msg.data.size() < sizeof(NtpPacket)) {
+        if (err) *err = "response too small";
+        return false;
+      }
+
+      // Parse NTP packet
+      NtpPacket resp{};
+      std::memcpy(&resp, msg.data.data(), sizeof(resp));
+
+      // Extract timestamps
+      double T2 =
+          ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
+      double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
+
+      // Compute offset and delay
+      double delay = (T4 - T1) - (T3 - T2);
+      double offset = ((T2 - T1) + (T3 - T4)) / 2.0;
+
+      // Return results
+      *out_offset_s = offset;
+      *out_rtt_ms = static_cast<int>(std::max(0.0, delay) * 1000.0 + 0.5);
+      *out_response = std::move(msg.data);
+      return true;
+    }
+
+    elapsed_ms += kPollIntervalMs;
+  }
+
+  // Timeout
+  if (err) *err = "recvfrom timeout/failure";
+  return false;
 }
 
 ntpclock::ClockService::Impl::VendorHintResult
@@ -285,6 +399,42 @@ ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
   }
 
   return hint_result;
+}
+
+void ntpclock::ClockService::Impl::HandlePushMessage(
+    const internal::UdpSocket::Message& msg, const Options& snapshot) {
+  auto ts = time_source;
+  if (!ts) return;
+
+  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
+  double poll_interval_s = snapshot.PollIntervalMs() / 1000.0;
+
+  // Process vendor hints from Push message
+  auto result = vendor_hint_processor.ProcessAndApply(
+      msg.data, sizeof(NtpPacket), ts, step_threshold_s, poll_interval_s);
+
+  // If hints were applied (rate or abs change), signal Exchange abort
+  if (result.reset_needed) {
+    exchange_abort.store(true, std::memory_order_relaxed);
+    estimator_state.Clear();
+    offset_applied_s.store(0.0, std::memory_order_relaxed);
+
+    if (result.abs_applied) {
+      clock_corrector.AllowBackwardOnce();
+    }
+  }
+}
+
+std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
+  NtpPacket req{};
+  std::memset(&req, 0, sizeof(req));
+  req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);  // v4, client
+
+  WriteTimestamp(T1, reinterpret_cast<uint8_t*>(&req.tx_timestamp));
+
+  std::vector<uint8_t> buf(sizeof(req));
+  std::memcpy(buf.data(), &req, sizeof(req));
+  return buf;
 }
 
 ntpclock::Status ntpclock::ClockService::Impl::BuildInhibitedStatus(
@@ -359,6 +509,8 @@ void ntpclock::ClockService::Impl::Loop() {
   // Loop until stopped; snapshot options each iteration for runtime changes.
 
   int good_samples = 0;
+  auto next_poll_time = std::chrono::steady_clock::now();
+
   while (running.load(std::memory_order_acquire)) {
     // 1. Snapshot configuration for this iteration
     auto snapshot = [&]() {
@@ -369,20 +521,48 @@ void ntpclock::ClockService::Impl::Loop() {
     const double slew_rate_s_per_s = snapshot.SlewRateMsPerSec() / 1000.0;
     const int poll_interval_ms = snapshot.PollIntervalMs();
 
-    // 2. Acquire NTP sample
+    // 2. Wait for Push or poll deadline
+    auto now = std::chrono::steady_clock::now();
+    bool push_triggered = false;
+
+    while (now < next_poll_time) {
+      auto remaining =
+          std::chrono::duration_cast<milliseconds>(next_poll_time - now);
+      int wait_ms = std::min(static_cast<int>(remaining.count()), 100);
+
+      if (wait_ms <= 0) break;
+
+      internal::UdpSocket::Message msg;
+      if (udp_socket.WaitMessage(wait_ms, &msg)) {
+        if (msg.type == internal::UdpSocket::MessageType::Push) {
+          HandlePushMessage(msg, snapshot);
+          push_triggered = true;
+          break;
+        }
+        // Ignore non-Push messages (unexpected Exchange responses)
+      }
+
+      now = std::chrono::steady_clock::now();
+    }
+
+    // Update next poll deadline
+    next_poll_time =
+        std::chrono::steady_clock::now() + milliseconds(poll_interval_ms);
+
+    // 3. Acquire NTP sample
     double sample_offset_s = 0.0;
     int sample_rtt_ms = 0;
     std::vector<uint8_t> response;
     std::string err;
     bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &response, &err);
 
-    // 2a. Process vendor hint from response if available
+    // 3a. Process vendor hint from response if available
     VendorHintResult hint_result;
     if (ok && response.size() > sizeof(NtpPacket)) {
       hint_result = ApplyVendorHintFromRx(response);
     }
 
-    // 3. Build status based on sample validity and inhibition state
+    // 4. Build status based on sample validity and inhibition state
     Status st_local;
     double tnow = time_source ? time_source->NowUnix() : 0.0;
     bool is_inhibited =
@@ -416,14 +596,11 @@ void ntpclock::ClockService::Impl::Loop() {
       st_local.last_error = err.empty() ? "sample rejected" : err;
     }
 
-    // 4. Update shared status (single location for all paths)
+    // 5. Update shared status (single location for all paths)
     {
       std::lock_guard<std::mutex> lk(status_mtx);
       status = st_local;
     }
-
-    // 5. Sleep until next poll
-    std::this_thread::sleep_for(milliseconds(poll_interval_ms));
   }
 }
 
@@ -446,6 +623,15 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
     p_->opts = opt;
   }
 
+  // Open UDP socket for persistent connection
+  auto get_time = [time_source]() {
+    return time_source ? time_source->NowUnix() : 0.0;
+  };
+  if (!p_->udp_socket.Open(ip, port, get_time)) {
+    p_->time_source = nullptr;
+    return false;
+  }
+
   p_->running.store(true, std::memory_order_release);
   p_->thread = std::thread([this]() { p_->Loop(); });
   return true;
@@ -453,6 +639,7 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
 
 void ntpclock::ClockService::Stop() {
   if (!p_->running.exchange(false)) return;
+  p_->udp_socket.Close();  // Close socket first to unblock receive thread
   if (p_->thread.joinable()) p_->thread.join();
   p_->time_source = nullptr;
 }

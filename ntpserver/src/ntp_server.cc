@@ -136,7 +136,7 @@ class NtpServer::Impl {
     NtpPacket resp{};
     BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now, now, now,
                         &resp);
-    std::vector<uint8_t> ef = MakeVendorEf(ts, now);
+    std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
     // prune and send
@@ -230,7 +230,7 @@ class NtpServer::Impl {
 
     double t_recv = 0.0;
     NtpPacket resp = MakeResponse(req, ts, &t_recv);
-    std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix());
+    std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix(), false);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
     RememberClient(cli, t_recv);
     SendBuf(cli, clen, buf);
@@ -270,11 +270,17 @@ class NtpServer::Impl {
    * @brief Build vendor extension field (ABS+RATE) bytes.
    * @param ts         Time source to query rate.
    * @param server_now Server absolute time to embed.
+   * @param is_push    True for Push notifications, false for Exchange
+   * responses.
    */
-  std::vector<uint8_t> MakeVendorEf(TimeSource* ts, double server_now) {
+  std::vector<uint8_t> MakeVendorEf(TimeSource* ts, double server_now,
+                                    bool is_push) {
     NtpVendorExt::Payload v{};
     v.seq = ++ctrl_seq_;
     v.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
+    if (is_push) {
+      v.flags |= NtpVendorExt::kFlagPush;
+    }
     v.server_unix_s = server_now;
     v.abs_unix_s = server_now;
     v.rate_scale = ts->GetRate();

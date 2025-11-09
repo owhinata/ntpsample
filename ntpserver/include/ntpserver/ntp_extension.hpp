@@ -57,6 +57,7 @@ struct NtpVendorExt {
   enum : uint8_t {
     kFlagAbs = 1u << 0,   ///< ABS present (SetAbsolute)
     kFlagRate = 1u << 1,  ///< RATE present (SetRate)
+    kFlagPush = 1u << 2,  ///< Push notification (server-initiated)
   };
 
   /**
