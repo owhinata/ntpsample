@@ -147,13 +147,24 @@ class ClockService {
   /**
    * @brief Start background synchronization.
    * @param time_source Local time source (must remain valid until Stop).
+   *                    If nullptr, uses QpcClock::Instance() as default.
    * @param ip  IPv4 address in numeric form (no DNS).
    * @param port UDP port of the server.
    * @param opt  Immutable options snapshot.
-   * @return true if worker thread started, false if time_source is null.
+   * @return true if worker thread started.
    */
   bool Start(ntpserver::TimeSource* time_source, const std::string& ip,
              uint16_t port, const Options& opt);
+
+  /**
+   * @brief Start background synchronization with default QpcClock.
+   * @param ip  IPv4 address in numeric form (no DNS).
+   * @param port UDP port of the server.
+   * @param opt  Immutable options snapshot.
+   * @return true if worker thread started.
+   */
+  bool Start(const std::string& ip, uint16_t port, const Options& opt);
+
   void Stop();
 
   /**

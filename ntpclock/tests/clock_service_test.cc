@@ -47,8 +47,7 @@ TEST(ClockServiceTest, StartStopWithoutServer) {
   ClockService svc;
   auto opts = Options::Builder().PollIntervalMs(100).Build();
   // Start against a non-routable test net address: no crash expected.
-  svc.Start(&ntpserver::QpcClock::Instance(), "203.0.113.1", 9123,
-            opts);  // TEST-NET-3 per RFC 5737
+  svc.Start("203.0.113.1", 9123, opts);  // TEST-NET-3 per RFC 5737
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   (void)svc.NowUnix();
   svc.Stop();

@@ -44,7 +44,7 @@ ntpclock::Options::Builder::Builder()
       max_rtt_ms_(100),
       min_samples_to_lock_(3),
       offset_window_(5),
-      skew_window_(20) {}
+      skew_window_(10) {}
 
 ntpclock::Options::Builder::Builder(const Options& base)
     : poll_interval_ms_(base.PollIntervalMs()),
@@ -694,7 +694,10 @@ ntpclock::ClockService::~ClockService() { Stop(); }
 bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
                                    const std::string& ip, uint16_t port,
                                    const Options& opt) {
-  if (!time_source) return false;
+  // Use QpcClock::Instance() as default if time_source is nullptr
+  if (!time_source) {
+    time_source = &ntpserver::QpcClock::Instance();
+  }
 
   Stop();
   p_->time_source = time_source;
@@ -716,6 +719,11 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   p_->running.store(true, std::memory_order_release);
   p_->thread = std::thread([this]() { p_->Loop(); });
   return true;
+}
+
+bool ntpclock::ClockService::Start(const std::string& ip, uint16_t port,
+                                   const Options& opt) {
+  return Start(nullptr, ip, port, opt);
 }
 
 void ntpclock::ClockService::Stop() {

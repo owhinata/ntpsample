@@ -5,7 +5,7 @@
  * Usage:
  *   ntpclock_example --ip 127.0.0.1 --port 9123 \
  *     --poll 1000 --step 200 --slew 5.0 --max-rtt 100 \
- *     --offset-window 5 --skew-window 20
+ *     --offset-window 5 --skew-window 10
  */
 
 #include <cstdio>
@@ -68,12 +68,15 @@ void PrintUsage() {
   std::fprintf(stderr,
                "Usage: ntpclock_example --ip A.B.C.D --port N [options]\n"
                "Options:\n"
+               "  --ip A.B.C.D         (default 127.0.0.1)\n"
+               "  --port N             (default 9123)\n"
                "  --poll ms            (default 1000)\n"
                "  --step ms            (default 200)\n"
                "  --slew ms_per_s      (default 5.0)\n"
                "  --max-rtt ms         (default 100)\n"
                "  --offset-window n    (default 5)\n"
-               "  --skew-window n      (default 20)\n");
+               "  --skew-window n      (default 10)\n"
+               "  --utc                (default: JST)\n");
 }
 }  // namespace
 
@@ -122,7 +125,7 @@ int main(int argc, char** argv) {
   HideCur();
   std::atexit(AtExitShowCur);
 
-  if (!svc.Start(&ntpserver::QpcClock::Instance(), ip, port, opt)) {
+  if (!svc.Start(ip, port, opt)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
