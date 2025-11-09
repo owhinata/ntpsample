@@ -18,6 +18,7 @@
 #include <string>
 
 #include "ntpserver/time_source.hpp"
+#include "ntpserver/time_spec.hpp"
 
 namespace ntpclock {
 
@@ -111,7 +112,7 @@ struct Status {
   double last_delay_s = 0.0;
   double offset_s = 0.0;
   double skew_ppm = 0.0;
-  double last_update_unix_s = 0.0;
+  ntpserver::TimeSpec last_update{};
   int samples = 0;
   Correction last_correction = Correction::None;
   double last_correction_amount_s = 0.0;
@@ -168,11 +169,11 @@ class ClockService {
   void Stop();
 
   /**
-   * @brief Return server-synchronized current time in UNIX seconds.
+   * @brief Return server-synchronized current time.
    * @note Monotonic non-decreasing during slew. If a step was just applied,
    *       one backward jump is allowed.
    */
-  double NowUnix() const;
+  ntpserver::TimeSpec NowUnix() const;
 
   Status GetStatus() const;
   Options GetOptions() const;

@@ -57,33 +57,48 @@ namespace {
 /** Simple fake time source for tests. */
 class FakeTimeSource : public ntpserver::TimeSource {
  public:
-  explicit FakeTimeSource(double start_unix)
-      : start_unix_(start_unix), start_tp_(std::chrono::steady_clock::now()) {}
-  double NowUnix() override {
-    auto dt = std::chrono::steady_clock::now() - start_tp_;
-    return start_unix_ + std::chrono::duration<double>(dt).count();
+  explicit FakeTimeSource(double start_unix) : start_tp_(std::chrono::steady_clock::now()) {
+    ntpserver::TimeSpec ts = ntpserver::TimeSpec::FromDouble(start_unix);
+    start_sec_.store(ts.sec);
+    start_nsec_.store(ts.nsec);
   }
-  void SetAbsolute(double unix_sec) override {
-    start_unix_ = unix_sec;
+  ntpserver::TimeSpec NowUnix() override {
+    auto dt = std::chrono::steady_clock::now() - start_tp_;
+    double elapsed = std::chrono::duration<double>(dt).count();
+    ntpserver::TimeSpec start(start_sec_.load(), start_nsec_.load());
+    ntpserver::TimeSpec elapsed_ts = ntpserver::TimeSpec::FromDouble(elapsed);
+    return start + elapsed_ts;
+  }
+  void SetAbsolute(const ntpserver::TimeSpec& time) override {
+    start_sec_.store(time.sec);
+    start_nsec_.store(time.nsec);
     start_tp_ = std::chrono::steady_clock::now();
   }
   void SetRate(double rate) override { (void)rate; }
-  void SetAbsoluteAndRate(double unix_sec, double rate) override {
+  void SetAbsoluteAndRate(const ntpserver::TimeSpec& time, double rate) override {
     // Just set absolute; rate is not emulated in tests
-    SetAbsolute(unix_sec);
+    SetAbsolute(time);
     (void)rate;
   }
   void ResetToRealTime() override {
     // Reset to current system time
-    start_unix_ = std::chrono::duration<double>(
-                      std::chrono::system_clock::now().time_since_epoch())
-                      .count();
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    auto sec = std::chrono::duration_cast<std::chrono::seconds>(duration);
+    auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(duration - sec);
+    start_sec_.store(sec.count());
+    start_nsec_.store(static_cast<uint32_t>(nsec.count()));
     start_tp_ = std::chrono::steady_clock::now();
   }
-  void Adjust(double delta) { SetAbsolute(NowUnix() + delta); }
+  void Adjust(double delta) {
+    ntpserver::TimeSpec current = NowUnix();
+    ntpserver::TimeSpec delta_ts = ntpserver::TimeSpec::FromDouble(delta);
+    SetAbsolute(current + delta_ts);
+  }
 
  private:
-  std::atomic<double> start_unix_;
+  std::atomic<int64_t> start_sec_;
+  std::atomic<uint32_t> start_nsec_;
   std::chrono::steady_clock::time_point start_tp_;
 };
 }  // namespace
@@ -124,10 +139,10 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
   auto st = svc.GetStatus();
   EXPECT_TRUE(st.samples >= 3);
 
-  double prev = svc.NowUnix();
+  double prev = svc.NowUnix().ToDouble();
   for (int i = 0; i < 50; ++i) {
     std::this_thread::sleep_for(milliseconds(10));
-    double cur = svc.NowUnix();
+    double cur = svc.NowUnix().ToDouble();
     EXPECT_GE(cur, prev) << "time decreased during slew";
     prev = cur;
   }
@@ -168,7 +183,7 @@ TEST(ClockServiceTest, StepAllowsBackwardOnce) {
   ASSERT_TRUE(svc.Start(&client_ts, "127.0.0.1", 29334, opts));
   std::this_thread::sleep_for(milliseconds(500));
 
-  double last_now_before_step = svc.NowUnix();
+  double last_now_before_step = svc.NowUnix().ToDouble();
   // Step server backward by 300 ms
   server_ts.Adjust(-0.300);
   // Poll status; capture NowUnix() while waiting to keep a pre-step baseline
@@ -181,16 +196,16 @@ TEST(ClockServiceTest, StepAllowsBackwardOnce) {
       break;
     }
     // still pre-step, update baseline
-    last_now_before_step = svc.NowUnix();
+    last_now_before_step = svc.NowUnix().ToDouble();
   }
   ASSERT_TRUE(stepped) << "did not observe Step within timeout";
-  double first_after = svc.NowUnix();
+  double first_after = svc.NowUnix().ToDouble();
   // Expect a backward jump relative to the immediate pre-step time.
   EXPECT_LT(first_after, last_now_before_step);
 
   // Next call should not go backward again
   std::this_thread::sleep_for(milliseconds(10));
-  double after2 = svc.NowUnix();
+  double after2 = svc.NowUnix().ToDouble();
   EXPECT_GE(after2, first_after);
 
   svc.Stop();

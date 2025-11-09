@@ -12,6 +12,7 @@
 #include <atomic>
 
 #include "ntpclock/clock_service.hpp"
+#include "ntpserver/time_spec.hpp"
 
 namespace ntpclock {
 namespace internal {
@@ -77,7 +78,7 @@ class ClockCorrector {
    * monotonicity. If Apply() previously applied a step correction, allows
    * the result to go backward once, then reverts to enforcing monotonicity.
    */
-  double GetMonotonicTime(double base_time);
+  ntpserver::TimeSpec GetMonotonicTime(const ntpserver::TimeSpec& base_time);
 
  private:
   std::atomic<double>* offset_applied_;

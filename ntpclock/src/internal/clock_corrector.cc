@@ -43,23 +43,27 @@ void ClockCorrector::AllowBackwardOnce() {
   allow_backward_once_.store(true, std::memory_order_release);
 }
 
-double ClockCorrector::GetMonotonicTime(double base_time) {
+ntpserver::TimeSpec ClockCorrector::GetMonotonicTime(
+    const ntpserver::TimeSpec& base_time) {
   // Apply current offset correction
-  double candidate =
-      base_time + offset_applied_->load(std::memory_order_relaxed);
+  double offset_s = offset_applied_->load(std::memory_order_relaxed);
+  ntpserver::TimeSpec offset_ts = ntpserver::TimeSpec::FromDouble(offset_s);
+  ntpserver::TimeSpec candidate = base_time + offset_ts;
+
+  double candidate_d = candidate.ToDouble();
 
   // Allow one backward jump right after a step correction
   if (allow_backward_once_.exchange(false, std::memory_order_acq_rel)) {
-    last_returned_s_.store(candidate, std::memory_order_relaxed);
+    last_returned_s_.store(candidate_d, std::memory_order_relaxed);
     return candidate;
   }
 
   // Otherwise, enforce monotonicity with a small epsilon
   double last = last_returned_s_.load(std::memory_order_relaxed);
   const double eps = 1e-9;
-  double clamped = std::max(candidate, last + eps);
-  last_returned_s_.store(clamped, std::memory_order_relaxed);
-  return clamped;
+  double clamped_d = std::max(candidate_d, last + eps);
+  last_returned_s_.store(clamped_d, std::memory_order_relaxed);
+  return ntpserver::TimeSpec::FromDouble(clamped_d);
 }
 
 }  // namespace internal

@@ -39,29 +39,49 @@ uint64_t Hton64(uint64_t v) {
 
 class FakeTimeSource : public TimeSource {
  public:
-  explicit FakeTimeSource(double t) : value_(t) {}
-  double NowUnix() override { return value_.load(); }
-  void SetAbsolute(double unix_sec) override { value_.store(unix_sec); }
+  explicit FakeTimeSource(double t) {
+    TimeSpec ts = TimeSpec::FromDouble(t);
+    value_sec_.store(ts.sec);
+    value_nsec_.store(ts.nsec);
+  }
+  TimeSpec NowUnix() override {
+    int64_t sec = value_sec_.load();
+    uint32_t nsec = value_nsec_.load();
+    return TimeSpec(sec, nsec);
+  }
+  void SetAbsolute(const TimeSpec& time) override {
+    value_sec_.store(time.sec);
+    value_nsec_.store(time.nsec);
+  }
   void SetRate(double rate) override {
     // No-op for tests; could emulate rate if needed.
     (void)rate;
   }
-  void SetAbsoluteAndRate(double unix_sec, double rate) override {
+  void SetAbsoluteAndRate(const TimeSpec& time, double rate) override {
     // Just set absolute; rate is not emulated in tests
-    value_.store(unix_sec);
+    SetAbsolute(time);
     (void)rate;
   }
   void ResetToRealTime() override {
     // Reset to current system time
-    value_.store(std::chrono::duration<double>(
-                     std::chrono::system_clock::now().time_since_epoch())
-                     .count());
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    auto sec = std::chrono::duration_cast<std::chrono::seconds>(duration);
+    auto nsec =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(duration - sec);
+    value_sec_.store(sec.count());
+    value_nsec_.store(static_cast<uint32_t>(nsec.count()));
   }
   double GetRate() const override { return 1.0; }
-  void Set(double t) { value_.store(t); }
+  void Set(double t) {
+    TimeSpec ts = TimeSpec::FromDouble(t);
+    value_sec_.store(ts.sec);
+    value_nsec_.store(ts.nsec);
+  }
 
  private:
-  std::atomic<double> value_;
+  std::atomic<int64_t> value_sec_;
+  std::atomic<uint32_t> value_nsec_;
 };
 
 class WinsockGuard {
@@ -113,7 +133,7 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
   NtpPacket req{};
   req.li_vn_mode =
       static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);  // client mode
-  req.tx_timestamp = Hton64(ToNtpTimestamp(ts.NowUnix()));
+  req.tx_timestamp = Hton64(ts.NowUnix().ToNtpTimestamp());
 
   int sent = sendto(sock, reinterpret_cast<const char*>(&req), sizeof(req), 0,
                     reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
@@ -151,7 +171,7 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
   EXPECT_EQ(resp.orig_timestamp, req.tx_timestamp);
 
   // Reference/recv/tx timestamps are based on our fixed time.
-  uint64_t expected = Hton64(ToNtpTimestamp(ts.NowUnix()));
+  uint64_t expected = Hton64(ts.NowUnix().ToNtpTimestamp());
   EXPECT_EQ(resp.recv_timestamp, expected);
   EXPECT_EQ(resp.tx_timestamp, expected);
 
@@ -169,8 +189,12 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
     NtpVendorExt::Payload v{};
     ASSERT_TRUE(NtpVendorExt::Parse(val, &v));
     EXPECT_EQ(v.flags, NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate);
-    EXPECT_DOUBLE_EQ(v.server_unix_s, ts.NowUnix());
-    EXPECT_DOUBLE_EQ(v.abs_unix_s, ts.NowUnix());
+    TimeSpec expected_time = ts.NowUnix();
+    EXPECT_EQ(v.server_time.sec, expected_time.sec);
+    EXPECT_NEAR(v.server_time.nsec, expected_time.nsec,
+                1u);  // Allow 1ns rounding
+    EXPECT_EQ(v.abs_time.sec, expected_time.sec);
+    EXPECT_NEAR(v.abs_time.nsec, expected_time.nsec, 1u);
     EXPECT_DOUBLE_EQ(v.rate_scale, 1.0);
   }
 

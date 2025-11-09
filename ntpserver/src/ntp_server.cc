@@ -113,17 +113,19 @@ class NtpServer::Impl {
   void NotifyControlSnapshot() {
     TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
     if (sock_ == INVALID_SOCKET) return;
-    const double now = ts->NowUnix();
+    const TimeSpec now = ts->NowUnix();
+    const double now_d = now.ToDouble();  // TODO(phase4): Convert
+                                          // BuildResponsePacket to TimeSpec
 
     // Minimal mode-4 response and EF using SRP helpers
     NtpPacket resp{};
-    BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now, now, now,
-                        &resp);
+    BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now_d, now_d,
+                        now_d, &resp);
     std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
     // prune and send
-    const double cutoff = now - 60.0;
+    const double cutoff = now_d - 60.0;
     auto& clients = client_tracker_.GetAllMutable();
     auto it = clients.begin();
     while (it != clients.end()) {
@@ -211,11 +213,11 @@ class NtpServer::Impl {
     NtpPacket req{};
     if (!ReceiveNtp(&cli, &clen, &req)) return;
 
-    double t_recv = 0.0;
+    TimeSpec t_recv{};
     NtpPacket resp = MakeResponse(req, ts, &t_recv);
     std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix(), false);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
-    RememberClient(cli, t_recv);
+    RememberClient(cli, t_recv.ToDouble());
     SendBuf(cli, clen, buf);
   }
 
@@ -238,14 +240,16 @@ class NtpServer::Impl {
    * @param ts      Time source used for timestamps.
    * @param t_recv  Output: receive time used in response.
    */
-  NtpPacket MakeResponse(const NtpPacket& req, TimeSource* ts, double* t_recv) {
-    const double tr = ts->NowUnix();
-    const double t_ref = tr;
-    const double t_tx = ts->NowUnix();
+  NtpPacket MakeResponse(const NtpPacket& req, TimeSource* ts,
+                         TimeSpec* t_recv) {
+    const TimeSpec tr = ts->NowUnix();
+    const double t_ref = tr.ToDouble();
+    const double t_rx = tr.ToDouble();
+    const double t_tx = ts->NowUnix().ToDouble();
     if (t_recv) *t_recv = tr;
     NtpPacket resp{};
-    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, tr, t_tx,
-                        &resp);
+    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, t_rx,
+                        t_tx, &resp);
     return resp;
   }
 
@@ -256,7 +260,7 @@ class NtpServer::Impl {
    * @param is_push    True for Push notifications, false for Exchange
    * responses.
    */
-  std::vector<uint8_t> MakeVendorEf(TimeSource* ts, double server_now,
+  std::vector<uint8_t> MakeVendorEf(TimeSource* ts, const TimeSpec& server_now,
                                     bool is_push) {
     NtpVendorExt::Payload v{};
     v.seq = ++ctrl_seq_;
@@ -264,8 +268,8 @@ class NtpServer::Impl {
     if (is_push) {
       v.flags |= NtpVendorExt::kFlagPush;
     }
-    v.server_unix_s = server_now;
-    v.abs_unix_s = server_now;
+    v.server_time = server_now;
+    v.abs_time = server_now;
     v.rate_scale = ts->GetRate();
     std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
 

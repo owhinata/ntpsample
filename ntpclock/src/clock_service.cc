@@ -111,8 +111,8 @@ std::ostream& operator<<(std::ostream& os, const Status& s) {
      << "ms"
      << ", offset=" << s.offset_s << "s"
      << ", skew=" << s.skew_ppm << "ppm"
-     << ", last_update=" << s.last_update_unix_s << ", samples=" << s.samples
-     << ", last_corr="
+     << ", last_update=" << s.last_update.ToDouble()
+     << ", samples=" << s.samples << ", last_corr="
      << (s.last_correction == ntpclock::Status::Correction::None
              ? "none"
              : (s.last_correction == ntpclock::Status::Correction::Slew
@@ -162,10 +162,10 @@ struct ntpclock::ClockService::Impl {
   /**
    * @brief Build an NTP request packet.
    *
-   * @param T1 Transmit timestamp (UNIX seconds).
+   * @param T1 Transmit timestamp.
    * @return Raw NTP request packet bytes.
    */
-  std::vector<uint8_t> BuildNtpRequest(double T1);
+  std::vector<uint8_t> BuildNtpRequest(const ntpserver::TimeSpec& T1);
 
   /**
    * @brief Wait for exchange response with abort checking.
@@ -189,17 +189,17 @@ struct ntpclock::ClockService::Impl {
    * @param err Output error message on failure.
    * @return true on success, false on parsing error.
    */
-  bool ProcessNtpResponse(const internal::UdpSocket::Message& msg, double T1,
-                          double* out_offset_s, int* out_rtt_ms,
-                          std::string* err);
+  bool ProcessNtpResponse(const internal::UdpSocket::Message& msg,
+                          const ntpserver::TimeSpec& T1, double* out_offset_s,
+                          int* out_rtt_ms, std::string* err);
 
   /**
    * @brief Result of vendor hint processing.
    */
   struct VendorHintResult {
-    bool applied = false;        ///< Whether any hint was applied
-    bool abs_applied = false;    ///< Whether SetAbsolute was applied
-    double step_amount_s = 0.0;  ///< Step amount (if abs_applied)
+    bool applied = false;             ///< Whether any hint was applied
+    bool abs_applied = false;         ///< Whether SetAbsolute was applied
+    ntpserver::TimeSpec step_amount;  ///< Step amount (if abs_applied)
   };
 
   /**
@@ -309,16 +309,11 @@ struct ntpclock::ClockService::Impl {
 
 namespace {
 
-/** Write UNIX timestamp to NTP timestamp (64-bit big-endian). */
-inline void WriteTimestamp(double unix_seconds, uint8_t* dst8) {
-  uint32_t sec = static_cast<uint32_t>(
-      std::floor(unix_seconds + ntpserver::kNtpUnixEpochDiff));
-  double frac_d =
-      (unix_seconds + ntpserver::kNtpUnixEpochDiff) - static_cast<double>(sec);
-  uint32_t frac =
-      static_cast<uint32_t>(frac_d * static_cast<double>(1ULL << 32));
-  uint32_t sec_be = htonl(sec);
-  uint32_t frac_be = htonl(frac);
+/** Write TimeSpec to NTP timestamp (64-bit big-endian). */
+inline void WriteTimestamp(const ntpserver::TimeSpec& ts, uint8_t* dst8) {
+  uint64_t ntp_ts = ts.ToNtpTimestamp();
+  uint32_t sec_be = htonl(static_cast<uint32_t>(ntp_ts >> 32));
+  uint32_t frac_be = htonl(static_cast<uint32_t>(ntp_ts & 0xFFFFFFFFULL));
   std::memcpy(dst8 + 0, &sec_be, 4);
   std::memcpy(dst8 + 4, &frac_be, 4);
 }
@@ -348,7 +343,8 @@ bool ntpclock::ClockService::Impl::UdpExchange(
   exchange_abort.store(false, std::memory_order_relaxed);
 
   // Get transmit timestamp (T1) and build request
-  double T1 = time_source ? time_source->NowUnix() : 0.0;
+  ntpserver::TimeSpec T1 =
+      time_source ? time_source->NowUnix() : ntpserver::TimeSpec{};
   std::vector<uint8_t> req = BuildNtpRequest(T1);
 
   // Send request
@@ -372,7 +368,8 @@ bool ntpclock::ClockService::Impl::UdpExchange(
   return true;
 }
 
-std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
+std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(
+    const ntpserver::TimeSpec& T1) {
   ntpserver::NtpPacket req{};
   std::memset(&req, 0, sizeof(req));
   req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);  // v4, client
@@ -416,8 +413,8 @@ bool ntpclock::ClockService::Impl::WaitForExchangeResponse(
 }
 
 bool ntpclock::ClockService::Impl::ProcessNtpResponse(
-    const internal::UdpSocket::Message& msg, double T1, double* out_offset_s,
-    int* out_rtt_ms, std::string* err) {
+    const internal::UdpSocket::Message& msg, const ntpserver::TimeSpec& T1,
+    double* out_offset_s, int* out_rtt_ms, std::string* err) {
   if (msg.data.size() < sizeof(ntpserver::NtpPacket)) {
     if (err) *err = "response too small";
     return false;
@@ -428,13 +425,14 @@ bool ntpclock::ClockService::Impl::ProcessNtpResponse(
   std::memcpy(&resp, msg.data.data(), sizeof(resp));
 
   // Extract timestamps
+  double T1_d = T1.ToDouble();
   double T2 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.recv_timestamp));
   double T3 = ReadTimestamp(reinterpret_cast<uint8_t*>(&resp.tx_timestamp));
   double T4 = msg.recv_time;
 
   // Compute offset and delay
-  double delay = (T4 - T1) - (T3 - T2);
-  double offset = ((T2 - T1) + (T3 - T4)) / 2.0;
+  double delay = (T4 - T1_d) - (T3 - T2);
+  double offset = ((T2 - T1_d) + (T3 - T4)) / 2.0;
 
   *out_offset_s = offset;
   *out_rtt_ms = static_cast<int>(std::max(0.0, delay) * 1000.0 + 0.5);
@@ -479,7 +477,7 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
     if (result.abs_applied) {
       clock_corrector.AllowBackwardOnce();
       hint_result.abs_applied = true;
-      hint_result.step_amount_s = result.step_amount_s;
+      hint_result.step_amount = result.step_amount;
     }
     hint_result.applied = true;
   }
@@ -512,7 +510,7 @@ void ntpclock::ClockService::Impl::SetBaseStatusFields(
   st->rtt_ms = sample_rtt_ms;
   st->last_delay_s = sample_rtt_ms / 1000.0;
   st->offset_s = sample_offset_s;
-  st->last_update_unix_s = tnow;
+  st->last_update = ntpserver::TimeSpec::FromDouble(tnow);
   st->last_error.clear();
 }
 
@@ -526,7 +524,7 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
   // Include vendor hint step correction if applied
   if (hint_result.abs_applied) {
     st.last_correction = Status::Correction::Step;
-    st.last_correction_amount_s = hint_result.step_amount_s;
+    st.last_correction_amount_s = hint_result.step_amount.ToDouble();
     st.window_count = 0;
     st.offset_applied_s = 0.0;
     st.offset_target_s = 0.0;
@@ -604,7 +602,7 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
 
   // Build status based on sample validity and vendor hint state
   Status st_local;
-  double tnow = time_source ? time_source->NowUnix() : 0.0;
+  double tnow = time_source ? time_source->NowUnix().ToDouble() : 0.0;
 
   if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
     // Vendor hint applied: skip normal correction
@@ -693,8 +691,8 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   }
 
   // Open UDP socket for persistent connection
-  auto get_time = [time_source]() {
-    return time_source ? time_source->NowUnix() : 0.0;
+  auto get_time = [time_source]() -> double {
+    return time_source ? time_source->NowUnix().ToDouble() : 0.0;
   };
   if (!p_->udp_socket.Open(ip, port, get_time)) {
     p_->time_source = nullptr;
@@ -718,11 +716,11 @@ void ntpclock::ClockService::Stop() {
   p_->time_source = nullptr;
 }
 
-double ntpclock::ClockService::NowUnix() const {
+ntpserver::TimeSpec ntpclock::ClockService::NowUnix() const {
   auto ts = p_->time_source;
-  if (!ts) return 0.0;
+  if (!ts) return ntpserver::TimeSpec{};
 
-  double base = ts->NowUnix();
+  ntpserver::TimeSpec base = ts->NowUnix();
 
   // ClockCorrector applies offset and enforces monotonicity
   return p_->clock_corrector.GetMonotonicTime(base);

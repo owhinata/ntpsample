@@ -66,18 +66,19 @@ bool VendorHintProcessor::ApplyRateHint(
 bool VendorHintProcessor::ApplyAbsoluteHint(
     const ntpserver::NtpVendorExt::Payload& payload,
     ntpserver::TimeSource* time_source, double step_threshold_s,
-    double* out_step_amount) {
+    ntpserver::TimeSpec* out_step_amount) {
   if ((payload.flags & ntpserver::NtpVendorExt::kFlagAbs) == 0U) {
     return false;
   }
 
-  double cur = time_source->NowUnix();
-  if (std::abs(payload.abs_unix_s - cur) < step_threshold_s) {
+  ntpserver::TimeSpec cur = time_source->NowUnix();
+  ntpserver::TimeSpec diff = ntpserver::AbsDiff(payload.abs_time, cur);
+  if (diff.ToDouble() < step_threshold_s) {
     return false;
   }
 
-  time_source->SetAbsolute(payload.abs_unix_s);
-  *out_step_amount = payload.abs_unix_s - cur;
+  time_source->SetAbsolute(payload.abs_time);
+  *out_step_amount = payload.abs_time - cur;
   return true;
 }
 
@@ -102,18 +103,18 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
   if (has_abs && has_rate) {
     const double rate_eps = 1e-12;  // ~1e-6 ppm
     double cur_rate = time_source->GetRate();
-    double cur_abs = time_source->NowUnix();
+    ntpserver::TimeSpec cur_abs = time_source->NowUnix();
 
     bool rate_changed = std::abs(payload.rate_scale - cur_rate) > rate_eps;
-    bool abs_changed =
-        std::abs(payload.abs_unix_s - cur_abs) >= step_threshold_s;
+    ntpserver::TimeSpec diff = ntpserver::AbsDiff(payload.abs_time, cur_abs);
+    bool abs_changed = diff.ToDouble() >= step_threshold_s;
 
     if (rate_changed || abs_changed) {
-      time_source->SetAbsoluteAndRate(payload.abs_unix_s, payload.rate_scale);
+      time_source->SetAbsoluteAndRate(payload.abs_time, payload.rate_scale);
       result.reset_needed = true;
       if (abs_changed) {
         result.abs_applied = true;
-        result.step_amount_s = payload.abs_unix_s - cur_abs;
+        result.step_amount = payload.abs_time - cur_abs;
       }
     }
   } else {
@@ -123,7 +124,7 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
     }
 
     if (ApplyAbsoluteHint(payload, time_source, step_threshold_s,
-                          &result.step_amount_s)) {
+                          &result.step_amount)) {
       result.reset_needed = true;
       result.abs_applied = true;
     }

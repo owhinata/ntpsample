@@ -20,18 +20,18 @@ class QpcClock : public TimeSource {
   QpcClock();
   ~QpcClock() override = default;
 
-  /** Returns current time as UNIX seconds. */
-  double NowUnix() override;
+  /** Returns current time. */
+  TimeSpec NowUnix() override;
 
   // Adjustments
   /** Sets progression rate (default 1.0). */
   void SetRate(double rate) override;
   /** Gets progression rate. */
   double GetRate() const override;
-  /** Sets absolute time in UNIX seconds. */
-  void SetAbsolute(double unix_sec) override;
+  /** Sets absolute time. */
+  void SetAbsolute(const TimeSpec& time) override;
   /** Atomically sets both absolute time and rate. */
-  void SetAbsoluteAndRate(double unix_sec, double rate) override;
+  void SetAbsoluteAndRate(const TimeSpec& time, double rate) override;
   /** Resets to real-time (system clock) with rate 1.0. */
   void ResetToRealTime() override;
 
@@ -41,8 +41,8 @@ class QpcClock : public TimeSource {
  private:
   /** Seconds elapsed since last anchor point (qpc_t0_) measured via QPC. */
   double Elapsed() const;
-  /** Current wall-clock UNIX seconds (system_clock). */
-  static double CurrentUnix();
+  /** Current wall-clock time (system_clock). */
+  static TimeSpec CurrentUnix();
 
   // We avoid Windows types in header to keep it portable.
   /** QPC value at anchor point (updated by
@@ -50,8 +50,8 @@ class QpcClock : public TimeSource {
   int64_t qpc_t0_;
   /** QPC frequency (counts per second). */
   double qpc_freq_;
-  /** UNIX seconds at anchor point (qpc_t0_). */
-  double start_unix_;
+  /** Time at anchor point (qpc_t0_). */
+  TimeSpec start_time_;
   /** Progression rate multiplier. */
   double rate_;
   mutable std::mutex mtx_;

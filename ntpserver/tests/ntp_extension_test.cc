@@ -22,9 +22,9 @@ TEST(NtpExtensionTest, RoundtripAbsRate) {
   NtpVendorExt::Payload p{};
   p.seq = 42;
   p.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
-  p.server_unix_s = 1762139748.210;
-  p.abs_unix_s = 1762139748.999123;
-  p.rate_scale = 1.000001;  // +1 ppm
+  p.server_time = ntpserver::TimeSpec(1762139748, 210000000);  // .210 sec
+  p.abs_time = ntpserver::TimeSpec(1762139748, 999123000);     // .999123 sec
+  p.rate_scale = 1.000001;                                     // +1 ppm
 
   auto bytes = NtpVendorExt::Serialize(p);
 
@@ -35,16 +35,16 @@ TEST(NtpExtensionTest, RoundtripAbsRate) {
   EXPECT_EQ(q.version, NtpVendorExt::kVersion);
   EXPECT_EQ(q.flags, p.flags);
   EXPECT_EQ(q.seq, p.seq);
-  EXPECT_DOUBLE_EQ(q.server_unix_s, p.server_unix_s);
-  EXPECT_DOUBLE_EQ(q.abs_unix_s, p.abs_unix_s);
+  EXPECT_EQ(q.server_time, p.server_time);
+  EXPECT_EQ(q.abs_time, p.abs_time);
   EXPECT_DOUBLE_EQ(q.rate_scale, p.rate_scale);
 }
 
 TEST(NtpExtensionTest, RejectsBadMagicAndVersion) {
   NtpVendorExt::Payload p{};
   p.flags = NtpVendorExt::kFlagAbs;
-  p.server_unix_s = 1.0;
-  p.abs_unix_s = 2.0;
+  p.server_time = ntpserver::TimeSpec(1, 0);
+  p.abs_time = ntpserver::TimeSpec(2, 0);
   auto bytes = NtpVendorExt::Serialize(p);
 
   // Corrupt magic

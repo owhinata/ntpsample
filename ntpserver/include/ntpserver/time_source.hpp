@@ -1,24 +1,27 @@
 // Copyright (c) 2025 <Your Name>
 /**
  * @file time_source.hpp
- * @brief Minimal time source interface (UNIX seconds provider).
+ * @brief Minimal time source interface (UNIX time provider).
  */
 #pragma once
+
+#include "ntpserver/time_spec.hpp"
 
 namespace ntpserver {
 
 /**
  * Interface for time sources.
- * Provides current time as UNIX seconds (UTC since 1970-01-01).
+ * Provides current time as UNIX epoch time with nanosecond precision.
  */
 class TimeSource {
  public:
   virtual ~TimeSource() = default;
-  /** Returns the current time in seconds since the UNIX epoch. */
-  virtual double NowUnix() = 0;
 
-  /** Sets absolute time in UNIX seconds (optional; used by clients). */
-  virtual void SetAbsolute(double /*unix_sec*/) = 0;
+  /** Returns the current time since the UNIX epoch. */
+  virtual TimeSpec NowUnix() = 0;
+
+  /** Sets absolute time (optional; used by clients). */
+  virtual void SetAbsolute(const TimeSpec& time) = 0;
 
   /** Sets progression rate multiplier (1.0 = real time). */
   virtual void SetRate(double /*rate*/) = 0;
@@ -29,10 +32,10 @@ class TimeSource {
    * Sets both absolute time and progression rate in a single atomic operation,
    * ensuring consistency when both values need to be updated together.
    *
-   * @param unix_sec Absolute time in UNIX seconds.
+   * @param time Absolute time.
    * @param rate Progression rate multiplier.
    */
-  virtual void SetAbsoluteAndRate(double unix_sec, double rate) = 0;
+  virtual void SetAbsoluteAndRate(const TimeSpec& time, double rate) = 0;
 
   /**
    * @brief Resets time source to real-time (system clock) with rate 1.0.

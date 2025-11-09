@@ -14,6 +14,7 @@
 
 #include "ntpserver/ntp_types.hpp"
 #include "ntpserver/time_source.hpp"
+#include "ntpserver/time_spec.hpp"
 
 namespace ntpclock {
 namespace internal {
@@ -31,9 +32,9 @@ class VendorHintProcessor {
    * @brief Result of processing a vendor hint.
    */
   struct HintResult {
-    bool reset_needed = false;  ///< Whether estimator reset is needed
-    bool abs_applied = false;   ///< Whether SetAbsolute was applied
-    double step_amount_s = 0.0; ///< Amount of step (if abs_applied)
+    bool reset_needed = false;       ///< Whether estimator reset is needed
+    bool abs_applied = false;        ///< Whether SetAbsolute was applied
+    ntpserver::TimeSpec step_amount; ///< Amount of step (if abs_applied)
   };
 
   VendorHintProcessor() = default;
@@ -83,13 +84,14 @@ class VendorHintProcessor {
    *
    * @param payload Parsed vendor extension payload.
    * @param time_source Target TimeSource.
-   * @param step_threshold_s Threshold for applying absolute time changes.
+   * @param step_threshold_s Threshold for applying absolute time changes (seconds).
    * @param out_step_amount Output parameter for step amount.
    * @return true if absolute time was changed, false otherwise.
    */
   bool ApplyAbsoluteHint(const ntpserver::NtpVendorExt::Payload& payload,
                          ntpserver::TimeSource* time_source,
-                         double step_threshold_s, double* out_step_amount);
+                         double step_threshold_s,
+                         ntpserver::TimeSpec* out_step_amount);
 
   uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
 };

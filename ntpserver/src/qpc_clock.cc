@@ -20,10 +20,14 @@ QpcClock::QpcClock() {
   ResetToRealTime();
 }
 
-double QpcClock::CurrentUnix() {
-  return std::chrono::duration<double>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
+TimeSpec QpcClock::CurrentUnix() {
+  auto now = std::chrono::system_clock::now();
+  auto duration = now.time_since_epoch();
+  auto sec = std::chrono::duration_cast<std::chrono::seconds>(duration);
+  auto nsec =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(duration - sec);
+
+  return TimeSpec(sec.count(), static_cast<uint32_t>(nsec.count()));
 }
 
 double QpcClock::Elapsed() const {
@@ -32,9 +36,12 @@ double QpcClock::Elapsed() const {
   return (static_cast<int64_t>(t.QuadPart) - qpc_t0_) / qpc_freq_;
 }
 
-double QpcClock::NowUnix() {
+TimeSpec QpcClock::NowUnix() {
   std::lock_guard<std::mutex> lk(mtx_);
-  return start_unix_ + rate_ * Elapsed();
+  double elapsed_s = Elapsed();
+  // Compute: start_time_ + rate_ * elapsed_s
+  TimeSpec elapsed_time = TimeSpec::FromDouble(elapsed_s);
+  return start_time_ + (elapsed_time * rate_);
 }
 
 void QpcClock::SetRate(double new_rate) {
@@ -47,15 +54,16 @@ void QpcClock::SetRate(double new_rate) {
 
   // Calculate current time (without calling Elapsed() to avoid second QPC call)
   double elapsed = (qpc_now - qpc_t0_) / qpc_freq_;
-  double now = start_unix_ + rate_ * elapsed;
+  TimeSpec elapsed_time = TimeSpec::FromDouble(elapsed);
+  TimeSpec now = start_time_ + (elapsed_time * rate_);
 
   // Update anchor point
   qpc_t0_ = qpc_now;
-  start_unix_ = now;
+  start_time_ = now;
   rate_ = new_rate;
 }
 
-void QpcClock::SetAbsolute(double unix_sec) {
+void QpcClock::SetAbsolute(const TimeSpec& time) {
   std::lock_guard<std::mutex> lk(mtx_);
 
   // Get current QPC once
@@ -64,10 +72,10 @@ void QpcClock::SetAbsolute(double unix_sec) {
   qpc_t0_ = static_cast<int64_t>(t.QuadPart);
 
   // Update anchor point (rate unchanged)
-  start_unix_ = unix_sec;
+  start_time_ = time;
 }
 
-void QpcClock::SetAbsoluteAndRate(double unix_sec, double new_rate) {
+void QpcClock::SetAbsoluteAndRate(const TimeSpec& time, double new_rate) {
   std::lock_guard<std::mutex> lk(mtx_);
 
   // Get current QPC once
@@ -76,7 +84,7 @@ void QpcClock::SetAbsoluteAndRate(double unix_sec, double new_rate) {
   qpc_t0_ = static_cast<int64_t>(t.QuadPart);
 
   // Update anchor point atomically
-  start_unix_ = unix_sec;
+  start_time_ = time;
   rate_ = new_rate;
 }
 
@@ -89,7 +97,7 @@ void QpcClock::ResetToRealTime() {
   qpc_t0_ = static_cast<int64_t>(t.QuadPart);
 
   // Reset to current system time with rate 1.0
-  start_unix_ = CurrentUnix();
+  start_time_ = CurrentUnix();
   rate_ = 1.0;
 }
 

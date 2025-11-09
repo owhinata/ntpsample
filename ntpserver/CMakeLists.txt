@@ -18,6 +18,7 @@ set(NTPSERVER_SOURCES
     src/ntp_server.cc
     src/qpc_clock.cc
     src/ntp_types.cc
+    src/time_spec.cc
 )
 
 if(NTP_SERVER_BUILD_SHARED)
@@ -83,6 +84,7 @@ if(NTP_SERVER_BUILD_TESTS)
     add_executable(ntpserver_tests
         tests/ntp_server_test.cc
         tests/ntp_extension_test.cc
+        tests/time_spec_test.cc
     )
     target_link_libraries(ntpserver_tests PRIVATE ntpserver gtest gtest_main ws2_32)
     target_include_directories(ntpserver_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

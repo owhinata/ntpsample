@@ -19,15 +19,19 @@
  *
  * Layout (TLV inside an NTP EF, all big-endian, 4-byte aligned):
  *
- *   - magic:    4 bytes, ASCII "NTPC" to avoid false positives
- *   - version:  1 byte, currently 1
- *   - flags:    1 byte, bit0=ABS, bit1=RATE (RESET is not needed)
- *   - reserve:  2 bytes, set to 0
- *   - seq:      4 bytes, monotonically increasing sequence number
- *   - srv_ts:   8 bytes, f64 server unix time (seconds)
- *   - abs:      8 bytes, f64 absolute unix time (present if ABS=1)
- *   - rate:     8 bytes, f64 rate scale (present if RATE=1, 1.0=realtime)
- *   - padding:  zero bytes to 4-byte boundary
+ *   Version 2 format:
+ *   - magic:      4 bytes, ASCII "NTPC" to avoid false positives
+ *   - version:    1 byte, version 2
+ *   - flags:      1 byte, bit0=ABS, bit1=RATE (RESET is not needed)
+ *   - reserve:    2 bytes, set to 0
+ *   - seq:        4 bytes, monotonically increasing sequence number
+ *   - srv_sec:    8 bytes, int64_t server time seconds (UNIX epoch)
+ *   - srv_nsec:   4 bytes, uint32_t server time nanoseconds
+ *   - abs_sec:    8 bytes, int64_t absolute time seconds (present if ABS=1)
+ *   - abs_nsec:   4 bytes, uint32_t absolute time nanoseconds (present if
+ * ABS=1)
+ *   - rate:       8 bytes, f64 rate scale (present if RATE=1, 1.0=realtime)
+ *   - padding:    zero bytes to 4-byte boundary
  *
  * Client behavior:
  *   - Validate magic/version, apply newer seq only.
@@ -46,6 +50,8 @@
 
 #include <cstdint>
 #include <vector>
+
+#include "ntpserver/time_spec.hpp"
 
 namespace ntpserver {
 
@@ -80,7 +86,7 @@ struct NtpVendorExt {
   /** ASCII magic "NTPC". */
   static constexpr uint32_t kMagic = 0x4e545043u;  // 'N''T''P''C'
   /** Version of payload format. */
-  static constexpr uint8_t kVersion = 1;
+  static constexpr uint8_t kVersion = 2;
   /** NTP Extension Field type code (private/experimental). */
   static constexpr uint16_t kEfTypeVendorHint = 0xFF01;
 
@@ -100,9 +106,9 @@ struct NtpVendorExt {
     uint8_t flags = 0;
     uint16_t reserved = 0;
     uint32_t seq = 0;
-    double server_unix_s = 0.0;
+    TimeSpec server_time;
     // Optional fields (included when corresponding flag is set)
-    double abs_unix_s = 0.0;
+    TimeSpec abs_time;
     double rate_scale = 1.0;
   };
 
