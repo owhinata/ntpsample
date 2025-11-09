@@ -17,7 +17,7 @@ file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
 set(NTPSERVER_SOURCES
     src/ntp_server.cc
     src/qpc_clock.cc
-    src/ntp_extension.cc
+    src/ntp_types.cc
 )
 
 if(NTP_SERVER_BUILD_SHARED)

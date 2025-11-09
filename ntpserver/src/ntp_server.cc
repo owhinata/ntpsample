@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "internal/client_tracker.hpp"
-#include "ntpserver/ntp_extension.hpp"
+#include "ntpserver/ntp_types.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -29,23 +29,6 @@
 namespace ntpserver {
 
 namespace {
-constexpr uint32_t kNtpUnixEpochDiff = 2208988800UL;  // seconds
-
-#pragma pack(push, 1)
-struct NtpPacket {
-  uint8_t li_vn_mode;
-  uint8_t stratum;
-  uint8_t poll;
-  int8_t precision;
-  uint32_t root_delay;
-  uint32_t root_dispersion;
-  uint32_t ref_id;
-  uint64_t ref_timestamp;
-  uint64_t orig_timestamp;
-  uint64_t recv_timestamp;
-  uint64_t tx_timestamp;
-};
-#pragma pack(pop)
 
 /** Returns v converted to big-endian (network) order. */
 inline uint64_t Hton64(uint64_t v) {

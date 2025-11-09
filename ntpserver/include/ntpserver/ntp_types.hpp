@@ -1,16 +1,21 @@
+// Copyright (c) 2025 <Your Name>
 /**
+ * @file ntp_types.hpp
+ * @brief NTP protocol types and structures.
  *
- * Copyright 2025 Contributors
+ * This header defines core NTP protocol types used across the codebase:
+ * - Basic NTP packet structure (NTPv4)
+ * - NTP Extension Field for vendor hints (ABS/RATE propagation)
+ * - Common constants and conversions
  *
- * @file ntp_extension.hpp
- * @brief NTP Extension Field for vendor hints (ABS/RATE propagation).
+ * NTP Extension Field (Vendor Hint) Layout:
  *
- * This header defines a compact binary layout for a vendor-specific
- * NTP Extension Field (EF) used to propagate time control hints from an
- * NTP server to clients: absolute time (SetAbsolute) and rate scale
- * (SetRate). The EF is embedded in normal NTP packets (UDP/123), both
- * in regular replies and in server-originated notifications (mode 4
- * form factor) when configuration changes occur.
+ * This compact binary layout is used for a vendor-specific NTP Extension
+ * Field (EF) to propagate time control hints from an NTP server to clients:
+ * absolute time (SetAbsolute) and rate scale (SetRate). The EF is embedded
+ * in normal NTP packets (UDP/123), both in regular replies and in
+ * server-originated notifications (mode 4 form factor) when configuration
+ * changes occur.
  *
  * Layout (TLV inside an NTP EF, all big-endian, 4-byte aligned):
  *
@@ -43,6 +48,32 @@
 #include <vector>
 
 namespace ntpserver {
+
+/** @brief NTP epoch offset from UNIX epoch (seconds, 1900-01-01 vs 1970-01-01).
+ */
+constexpr uint32_t kNtpUnixEpochDiff = 2208988800UL;
+
+/**
+ * @brief NTPv4 basic packet structure (48 bytes).
+ *
+ * All fields are transmitted in network (big-endian) byte order.
+ * Extension fields may follow after the basic 48-byte packet.
+ */
+#pragma pack(push, 1)
+struct NtpPacket {
+  uint8_t li_vn_mode;        ///< Leap Indicator, Version, Mode
+  uint8_t stratum;           ///< Stratum level
+  uint8_t poll;              ///< Poll interval (log2 seconds)
+  int8_t precision;          ///< Precision (log2 seconds)
+  uint32_t root_delay;       ///< Root delay (NTP short format)
+  uint32_t root_dispersion;  ///< Root dispersion (NTP short format)
+  uint32_t ref_id;           ///< Reference ID
+  uint64_t ref_timestamp;    ///< Reference timestamp (NTP timestamp format)
+  uint64_t orig_timestamp;   ///< Origin timestamp (NTP timestamp format)
+  uint64_t recv_timestamp;   ///< Receive timestamp (NTP timestamp format)
+  uint64_t tx_timestamp;     ///< Transmit timestamp (NTP timestamp format)
+};
+#pragma pack(pop)
 
 /** @brief Vendor hint EF constants. */
 struct NtpVendorExt {

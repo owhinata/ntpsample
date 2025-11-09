@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "ntpserver/ntp_extension.hpp"
+#include "ntpserver/ntp_types.hpp"
 #include "ntpserver/time_source.hpp"
 
 namespace ntpclock {

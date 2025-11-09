@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntpserver/ntp_extension.hpp"
+#include "ntpserver/ntp_types.hpp"
 
 namespace ntpclock {
 namespace internal {

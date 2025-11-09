@@ -1,10 +1,9 @@
-//
-// Copyright 2025 Contributors
-//
-// ntp_extension.cc
-// Implementation of NTP vendor extension (serialize/parse).
-
-#include "ntpserver/ntp_extension.hpp"
+// Copyright (c) 2025 <Your Name>
+/**
+ * @file ntp_types.cc
+ * @brief Implementation of NTP vendor extension (serialize/parse).
+ */
+#include "ntpserver/ntp_types.hpp"
 
 #include <array>
 #include <cstring>

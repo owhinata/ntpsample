@@ -31,7 +31,7 @@
 #include "internal/sync_estimator_state.hpp"
 #include "internal/udp_socket.hpp"
 #include "internal/vendor_hint_processor.hpp"
-#include "ntpserver/ntp_extension.hpp"
+#include "ntpserver/ntp_types.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
 using std::chrono::milliseconds;
@@ -308,29 +308,13 @@ struct ntpclock::ClockService::Impl {
 };
 
 namespace {
-constexpr uint32_t kNtpUnixEpochDiff = 2208988800UL;
-
-#pragma pack(push, 1)
-struct NtpPacket {
-  uint8_t li_vn_mode;
-  uint8_t stratum;
-  uint8_t poll;
-  int8_t precision;
-  uint32_t root_delay;
-  uint32_t root_dispersion;
-  uint32_t ref_id;
-  uint64_t ref_timestamp;
-  uint64_t orig_timestamp;
-  uint64_t recv_timestamp;
-  uint64_t tx_timestamp;
-};
-#pragma pack(pop)
 
 /** Write UNIX timestamp to NTP timestamp (64-bit big-endian). */
 inline void WriteTimestamp(double unix_seconds, uint8_t* dst8) {
-  uint32_t sec =
-      static_cast<uint32_t>(std::floor(unix_seconds + kNtpUnixEpochDiff));
-  double frac_d = (unix_seconds + kNtpUnixEpochDiff) - static_cast<double>(sec);
+  uint32_t sec = static_cast<uint32_t>(
+      std::floor(unix_seconds + ntpserver::kNtpUnixEpochDiff));
+  double frac_d =
+      (unix_seconds + ntpserver::kNtpUnixEpochDiff) - static_cast<double>(sec);
   uint32_t frac =
       static_cast<uint32_t>(frac_d * static_cast<double>(1ULL << 32));
   uint32_t sec_be = htonl(sec);
@@ -346,7 +330,8 @@ inline double ReadTimestamp(const uint8_t* src8) {
   std::memcpy(&frac_be, src8 + 4, 4);
   uint32_t sec = ntohl(sec_be);
   uint32_t frac = ntohl(frac_be);
-  return (static_cast<double>(sec) - static_cast<double>(kNtpUnixEpochDiff)) +
+  return (static_cast<double>(sec) -
+          static_cast<double>(ntpserver::kNtpUnixEpochDiff)) +
          (static_cast<double>(frac) / static_cast<double>(1ULL << 32));
 }
 }  // namespace
@@ -388,7 +373,7 @@ bool ntpclock::ClockService::Impl::UdpExchange(
 }
 
 std::vector<uint8_t> ntpclock::ClockService::Impl::BuildNtpRequest(double T1) {
-  NtpPacket req{};
+  ntpserver::NtpPacket req{};
   std::memset(&req, 0, sizeof(req));
   req.li_vn_mode = static_cast<uint8_t>((0 << 6) | (4 << 3) | 3);  // v4, client
 
@@ -433,13 +418,13 @@ bool ntpclock::ClockService::Impl::WaitForExchangeResponse(
 bool ntpclock::ClockService::Impl::ProcessNtpResponse(
     const internal::UdpSocket::Message& msg, double T1, double* out_offset_s,
     int* out_rtt_ms, std::string* err) {
-  if (msg.data.size() < sizeof(NtpPacket)) {
+  if (msg.data.size() < sizeof(ntpserver::NtpPacket)) {
     if (err) *err = "response too small";
     return false;
   }
 
   // Parse NTP packet
-  NtpPacket resp{};
+  ntpserver::NtpPacket resp{};
   std::memcpy(&resp, msg.data.data(), sizeof(resp));
 
   // Extract timestamps
@@ -479,8 +464,8 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
   if (!ts) return hint_result;
 
   // Process vendor hints
-  auto result = vendor_hint_processor.ProcessAndApply(rx, sizeof(NtpPacket), ts,
-                                                      step_threshold_s);
+  auto result = vendor_hint_processor.ProcessAndApply(
+      rx, sizeof(ntpserver::NtpPacket), ts, step_threshold_s);
 
   // If reset is needed, clear estimator state
   if (result.reset_needed) {
@@ -613,7 +598,7 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
 
   // Process vendor hint from response if available
   VendorHintResult hint_result;
-  if (ok && response.size() > sizeof(NtpPacket)) {
+  if (ok && response.size() > sizeof(ntpserver::NtpPacket)) {
     hint_result = ApplyVendorHintFromRx(response, snapshot);
   }
 

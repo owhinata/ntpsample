@@ -14,13 +14,12 @@
 #endif
 #include <windows.h>
 
-#include "ntpserver/ntp_extension.hpp"
 #include "ntpserver/ntp_server.hpp"
+#include "ntpserver/ntp_types.hpp"
 
 namespace ntpserver {
 
 namespace {
-constexpr uint32_t kNtpUnixEpochDiff = 2208988800UL;  // seconds
 
 uint64_t ToNtpTimestamp(double unix_seconds) {
   double sec;
@@ -37,22 +36,6 @@ uint64_t Hton64(uint64_t v) {
   uint32_t lo = htonl(static_cast<uint32_t>(v & 0xFFFFFFFFULL));
   return (static_cast<uint64_t>(lo) << 32) | hi;
 }
-
-#pragma pack(push, 1)
-struct NtpPacket {
-  uint8_t li_vn_mode;
-  uint8_t stratum;
-  uint8_t poll;
-  int8_t precision;
-  uint32_t root_delay;
-  uint32_t root_dispersion;
-  uint32_t ref_id;
-  uint64_t ref_timestamp;
-  uint64_t orig_timestamp;
-  uint64_t recv_timestamp;
-  uint64_t tx_timestamp;
-};
-#pragma pack(pop)
 
 class FakeTimeSource : public TimeSource {
  public:
