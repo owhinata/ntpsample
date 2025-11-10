@@ -6,6 +6,8 @@
  * an NTP gateway that:
  * 1. Synchronizes with an upstream NTP server using ClockService
  * 2. Serves the synchronized time to downstream clients using NtpServer
+ * 3. Propagates vendor hints (rate/abs adjustments) from upstream to downstream
+ *    by sharing a single QpcClock instance between both components
  *
  * Usage:
  *   ntpclock_gateway --upstream-ip 127.0.0.1 --upstream-port 9123 \
@@ -23,7 +25,7 @@
 
 #include "ntpclock/clock_service.hpp"
 #include "ntpserver/ntp_server.hpp"
-#include "ntpserver/time_source.hpp"
+#include "ntpserver/qpc_clock.hpp"
 
 namespace {
 
@@ -44,45 +46,6 @@ void PrintUsage() {
                "  --step ms            Step threshold in ms (default 200)\n"
                "  --slew ms_per_s      Slew rate in ms/s (default 5.0)\n");
 }
-
-/**
- * @brief Adapter to expose ClockService as a TimeSource.
- *
- * Wraps a ClockService instance and implements the TimeSource interface
- * by delegating to ClockService::NowUnix().
- */
-class ClockServiceTimeSource : public ntpserver::TimeSource {
- public:
-  explicit ClockServiceTimeSource(ntpclock::ClockService* clock_service)
-      : clock_service_(clock_service) {}
-
-  ntpserver::TimeSpec NowUnix() override {
-    return clock_service_ ? clock_service_->NowUnix() : ntpserver::TimeSpec{};
-  }
-
-  double GetRate() const override {
-    return clock_service_ ? clock_service_->GetRate() : 1.0;
-  }
-
-  void SetRate(double) override {
-    // ClockService manages rate internally, no-op
-  }
-
-  void SetAbsolute(const ntpserver::TimeSpec&) override {
-    // ClockService manages offset internally, no-op
-  }
-
-  void SetAbsoluteAndRate(const ntpserver::TimeSpec&, double) override {
-    // ClockService manages both internally, no-op
-  }
-
-  void ResetToRealTime() override {
-    // ClockService manages sync internally, no-op
-  }
-
- private:
-  ntpclock::ClockService* clock_service_;
-};
 
 }  // namespace
 
@@ -125,9 +88,13 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
 
+  // Create shared QpcClock for both ClockService and NtpServer
+  // This allows vendor hints (rate/abs) to propagate from upstream to downstream
+  ntpserver::QpcClock& qpc_clock = ntpserver::QpcClock::Instance();
+
   // Create ClockService to sync with upstream server
   ntpclock::ClockService clock_service;
-  if (!clock_service.Start(upstream_ip, upstream_port, opts)) {
+  if (!clock_service.Start(&qpc_clock, upstream_ip, upstream_port, opts)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
@@ -137,13 +104,10 @@ int main(int argc, char** argv) {
   // Wait a bit for initial synchronization
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-  // Create TimeSource adapter wrapping ClockService
-  ClockServiceTimeSource time_source(&clock_service);
-
-  // Create NtpServer to serve downstream clients
+  // Create NtpServer to serve downstream clients using the same QpcClock
   ntpserver::NtpServer server;
   server.SetStratum(2);  // Stratum 2 (synced from stratum 1)
-  if (!server.Start(serve_port, &time_source)) {
+  if (!server.Start(serve_port, &qpc_clock)) {
     std::fprintf(stderr, "Failed to start NtpServer on port %u\n", serve_port);
     clock_service.Stop();
     return 1;
