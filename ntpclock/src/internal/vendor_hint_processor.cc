@@ -37,11 +37,12 @@ bool VendorHintProcessor::ParseVendorPayload(
     return false;
   }
 
-  // Deduplicate by sequence number
-  if (out_payload->seq <= last_seq_) {
+  // Deduplicate by sequence number using wrap-safe comparison
+  if (!IsSeqNewer(out_payload->seq)) {
     return false;
   }
   last_seq_ = out_payload->seq;
+  have_seq_ = true;
 
   return true;
 }
@@ -135,6 +136,14 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessAndApply(
   }
 
   return result;
+}
+
+bool VendorHintProcessor::IsSeqNewer(uint32_t seq) const {
+  if (!have_seq_) return true;
+  if (seq == last_seq_) return false;
+  // Signed diff captures wrap-around: positive diff => newer
+  int32_t diff = static_cast<int32_t>(seq - last_seq_);
+  return diff > 0;
 }
 
 }  // namespace internal

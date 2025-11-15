@@ -93,7 +93,16 @@ class VendorHintProcessor {
                          double step_threshold_s,
                          ntpserver::TimeSpec* out_step_amount);
 
-  uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
+  bool have_seq_ = false;   ///< Whether last_seq_ has been initialized
+  uint32_t last_seq_ = 0;   ///< Last processed sequence number for deduplication
+
+  /**
+   * @brief Return true if seq is newer than last_seq_, accounting for wrap.
+   *
+   * Uses signed arithmetic on the difference so that any forward delta
+   * smaller than 2^31 is treated as newer, and wrap-around still works.
+   */
+  bool IsSeqNewer(uint32_t seq) const;
 };
 
 }  // namespace internal

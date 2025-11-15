@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
@@ -112,6 +113,9 @@ class NtpServer::Impl {
   void SetStratum(uint8_t s) { stratum_ = s; }
   void SetPrecision(int8_t p) { precision_ = p; }
   void SetRefId(uint32_t ref_be) { ref_id_be_ = ref_be; }
+  void SetClientRetention(std::chrono::steady_clock::duration retention) {
+    client_tracker_.SetRetention(retention);
+  }
 
   void NotifyControlSnapshot() {
     TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
@@ -125,8 +129,9 @@ class NtpServer::Impl {
     std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
-    // Send to all clients without pruning
-    // Pruning based on absolute time is problematic when time jumps
+    // Prune inactive clients using monotonic time to tolerate absolute jumps.
+    client_tracker_.PruneStale(std::chrono::steady_clock::now());
+
     auto& clients = client_tracker_.GetAllMutable();
     for (auto& client : clients) {
       sendto(sock_, reinterpret_cast<const char*>(buf.data()),
@@ -330,6 +335,10 @@ void NtpServer::Stop() { impl_->Stop(); }
 void NtpServer::SetStratum(uint8_t s) { impl_->SetStratum(s); }
 void NtpServer::SetPrecision(int8_t p) { impl_->SetPrecision(p); }
 void NtpServer::SetRefId(uint32_t ref_id_be) { impl_->SetRefId(ref_id_be); }
+void NtpServer::SetClientRetention(
+    std::chrono::steady_clock::duration retention) {
+  impl_->SetClientRetention(retention);
+}
 void NtpServer::NotifyControlSnapshot() { impl_->NotifyControlSnapshot(); }
 
 }  // namespace ntpserver

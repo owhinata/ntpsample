@@ -1,6 +1,7 @@
 // Copyright (c) 2025 <Your Name>
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,6 +41,15 @@ class NTP_SERVER_API NtpServer {
   void SetPrecision(int8_t precision);
   /** Sets reference ID (network byte order, default: "LOCL"). */
   void SetRefId(uint32_t ref_id_be);
+  /**
+   * @brief Sets client retention duration for notifications (default 60 min).
+   *
++   * Clients that have not sent a request within this steady-clock duration
+   * are pruned from the notification list. Using a steady-clock duration
+   * allows pruning to remain correct even if the absolute time jumps.
+   * Passing zero or a negative duration keeps the default (60 minutes).
+   */
+  void SetClientRetention(std::chrono::steady_clock::duration retention);
 
   /**
    * @brief Sends a control snapshot (ABS/RATE via NTP EF) to known clients.

@@ -11,6 +11,8 @@
 
 #include <winsock2.h>
 
+#include <algorithm>
+#include <chrono>
 #include <vector>
 
 #include "ntpserver/time_spec.hpp"
@@ -32,7 +34,8 @@ class ClientTracker {
    */
   struct Client {
     sockaddr_in addr{};    ///< IPv4 socket address (IP + port).
-    TimeSpec last_seen{};  ///< Last request time.
+    TimeSpec last_seen{};  ///< Last request absolute time (for diagnostics).
+    std::chrono::steady_clock::time_point last_seen_mono{};  ///< Monotonic timestamp.
   };
 
   /**
@@ -46,14 +49,16 @@ class ClientTracker {
    * @param now Current time.
    */
   void Remember(const sockaddr_in& addr, const TimeSpec& now) {
+    const auto now_mono = std::chrono::steady_clock::now();
     for (auto& c : clients_) {
       if (c.addr.sin_addr.s_addr == addr.sin_addr.s_addr &&
           c.addr.sin_port == addr.sin_port) {
         c.last_seen = now;
+        c.last_seen_mono = now_mono;
         return;
       }
     }
-    clients_.push_back(Client{addr, now});
+    clients_.push_back(Client{addr, now, now_mono});
   }
 
   /**
@@ -73,8 +78,35 @@ class ClientTracker {
    */
   std::vector<Client>& GetAllMutable() { return clients_; }
 
+  /**
+   * @brief Remove clients that have not been seen within max_age.
+   *
+   * Uses steady_clock timestamps instead of absolute time so that
+   * pruning remains correct even if the time source jumps.
+   */
+  void PruneStale(std::chrono::steady_clock::time_point now_mono) {
+    auto effective = retention_;
+    if (effective <= std::chrono::steady_clock::duration::zero()) {
+      effective = std::chrono::minutes(60);
+    }
+    const auto is_stale = [&](const Client& c) {
+      return (now_mono - c.last_seen_mono) > effective;
+    };
+    clients_.erase(std::remove_if(clients_.begin(), clients_.end(), is_stale),
+                   clients_.end());
+  }
+
+  /**
+   * @brief Configure retention duration for clients (default 60 minutes).
+   */
+  void SetRetention(std::chrono::steady_clock::duration retention) {
+    retention_ = retention;
+  }
+
  private:
   std::vector<Client> clients_;
+  std::chrono::steady_clock::duration retention_{
+      std::chrono::minutes(60)};
 };
 
 }  // namespace internal
