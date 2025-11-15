@@ -72,6 +72,65 @@ inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
   out->recv_timestamp = Hton64(t_recv.ToNtpTimestamp());
   out->tx_timestamp = Hton64(t_tx.ToNtpTimestamp());
 }
+
+class StatsTracker {
+ public:
+  void Reset() {
+    packets_received_.store(0, std::memory_order_relaxed);
+    packets_sent_.store(0, std::memory_order_relaxed);
+    recv_errors_.store(0, std::memory_order_relaxed);
+    short_packets_.store(0, std::memory_order_relaxed);
+    send_errors_.store(0, std::memory_order_relaxed);
+    push_notifications_.store(0, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(last_error_mtx_);
+    last_error_.clear();
+  }
+
+  void IncPacketsReceived() {
+    packets_received_.fetch_add(1, std::memory_order_relaxed);
+  }
+  void IncPacketsSent() {
+    packets_sent_.fetch_add(1, std::memory_order_relaxed);
+  }
+  void IncRecvErrors() { recv_errors_.fetch_add(1, std::memory_order_relaxed); }
+  void IncShortPackets() {
+    short_packets_.fetch_add(1, std::memory_order_relaxed);
+  }
+  void IncSendErrors() { send_errors_.fetch_add(1, std::memory_order_relaxed); }
+  void IncPushNotifications() {
+    push_notifications_.fetch_add(1, std::memory_order_relaxed);
+  }
+  void SetLastError(const std::string& text) {
+    std::lock_guard<std::mutex> lk(last_error_mtx_);
+    last_error_ = text;
+  }
+
+  ServerStats Snapshot(uint64_t active_clients) const {
+    ServerStats stats;
+    stats.packets_received = packets_received_.load(std::memory_order_relaxed);
+    stats.packets_sent = packets_sent_.load(std::memory_order_relaxed);
+    stats.recv_errors = recv_errors_.load(std::memory_order_relaxed);
+    stats.drop_short_packets = short_packets_.load(std::memory_order_relaxed);
+    stats.send_errors = send_errors_.load(std::memory_order_relaxed);
+    stats.push_notifications =
+        push_notifications_.load(std::memory_order_relaxed);
+    stats.active_clients = active_clients;
+    std::lock_guard<std::mutex> lk(last_error_mtx_);
+    stats.last_error = last_error_;
+    return stats;
+  }
+
+ private:
+  std::atomic<uint64_t> packets_received_{0};
+  std::atomic<uint64_t> packets_sent_{0};
+  std::atomic<uint64_t> recv_errors_{0};
+  std::atomic<uint64_t> short_packets_{0};
+  std::atomic<uint64_t> send_errors_{0};
+  std::atomic<uint64_t> push_notifications_{0};
+  mutable std::mutex last_error_mtx_;
+  std::string last_error_;
+};
+
 }  // namespace
 
 class NtpServer::Impl {
@@ -91,16 +150,7 @@ class NtpServer::Impl {
     ref_id_ = options.RefId();
     client_tracker_.SetRetention(options.ClientRetention());
     log_callback_ = options.LogSink();
-    packets_received_.store(0, std::memory_order_relaxed);
-    packets_sent_.store(0, std::memory_order_relaxed);
-    recv_errors_.store(0, std::memory_order_relaxed);
-    short_packets_.store(0, std::memory_order_relaxed);
-    send_errors_.store(0, std::memory_order_relaxed);
-    push_notifications_.store(0, std::memory_order_relaxed);
-    {
-      std::lock_guard<std::mutex> lk(status_mtx_);
-      last_error_.clear();
-    }
+    stats_.Reset();
 
     if (!InitializeWinsock()) return false;
     if (!CreateAndBindSocket(port)) {
@@ -146,50 +196,16 @@ class NtpServer::Impl {
     auto& clients = client_tracker_.GetAllMutable();
     for (auto& client : clients) {
       if (SendBuffer(client.addr, sizeof(client.addr), buf)) {
-        push_notifications_.fetch_add(1, std::memory_order_relaxed);
+        stats_.IncPushNotifications();
       }
     }
   }
 
   ServerStats GetStats() const {
-    ServerStats stats;
-    stats.packets_received = packets_received_.load(std::memory_order_relaxed);
-    stats.packets_sent = packets_sent_.load(std::memory_order_relaxed);
-    stats.recv_errors = recv_errors_.load(std::memory_order_relaxed);
-    stats.drop_short_packets = short_packets_.load(std::memory_order_relaxed);
-    stats.send_errors = send_errors_.load(std::memory_order_relaxed);
-    stats.push_notifications =
-        push_notifications_.load(std::memory_order_relaxed);
-    stats.active_clients =
-        static_cast<uint64_t>(client_tracker_.GetAll().size());
-    {
-      std::lock_guard<std::mutex> lk(status_mtx_);
-      stats.last_error = last_error_;
-    }
-    return stats;
+    return stats_.Snapshot(client_tracker_.GetAll().size());
   }
 
  private:
-  /** Initializes WinSock. */
-  bool InitializeWinsock() {
-    WSADATA wsa{};
-    int err = WSAStartup(MAKEWORD(2, 2), &wsa);
-    if (err != 0) {
-      RecordError("WSAStartup failed", err);
-      return false;
-    }
-    wsa_started_ = true;
-    return true;
-  }
-
-  /** Releases WinSock if it was initialized. */
-  void CleanupWinsock() {
-    if (wsa_started_) {
-      WSACleanup();
-      wsa_started_ = false;
-    }
-  }
-
   /** Creates UDP socket and binds to given port. */
   bool CreateAndBindSocket(uint16_t port) {
     sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -269,14 +285,14 @@ class NtpServer::Impl {
     int n = recvfrom(sock_, reinterpret_cast<char*>(req), sizeof(*req), 0,
                      reinterpret_cast<sockaddr*>(cli), clen);
     if (n == sizeof(*req)) {
-      packets_received_.fetch_add(1, std::memory_order_relaxed);
+      stats_.IncPacketsReceived();
       return true;
     }
     if (n == SOCKET_ERROR) {
-      recv_errors_.fetch_add(1, std::memory_order_relaxed);
+      stats_.IncRecvErrors();
       LogSocketError("recvfrom");
     } else if (n > 0) {
-      short_packets_.fetch_add(1, std::memory_order_relaxed);
+      stats_.IncShortPackets();
       RecordError("short packet", 0);
     }
     return false;
@@ -353,10 +369,10 @@ class NtpServer::Impl {
                       static_cast<int>(buf.size()), 0,
                       reinterpret_cast<const sockaddr*>(&cli), clen);
     if (sent == static_cast<int>(buf.size())) {
-      packets_sent_.fetch_add(1, std::memory_order_relaxed);
+      stats_.IncPacketsSent();
       return true;
     }
-    send_errors_.fetch_add(1, std::memory_order_relaxed);
+    stats_.IncSendErrors();
     LogSocketError("sendto");
     return false;
   }
@@ -368,7 +384,6 @@ class NtpServer::Impl {
   std::thread thread_;
   std::atomic<bool> running_{false};
   SOCKET sock_{INVALID_SOCKET};
-  bool wsa_started_{false};
   std::mutex start_stop_mtx_;
 
   TimeSource* time_source_{nullptr};
@@ -377,18 +392,14 @@ class NtpServer::Impl {
   uint32_t ref_id_{Options::kDefaultRefId};
   uint32_t ctrl_seq_{0};
   Options::LogCallback log_callback_;
-  std::atomic<uint64_t> packets_received_{0};
-  std::atomic<uint64_t> packets_sent_{0};
-  std::atomic<uint64_t> recv_errors_{0};
-  std::atomic<uint64_t> short_packets_{0};
-  std::atomic<uint64_t> send_errors_{0};
-  std::atomic<uint64_t> push_notifications_{0};
-  mutable std::mutex status_mtx_;
-  std::string last_error_;
+  StatsTracker stats_;
+  bool wsa_started_{false};
 
   internal::ClientTracker client_tracker_;
   void RecordError(const std::string& msg, int err_code);
   void LogSocketError(const char* ctx);
+  bool InitializeWinsock();
+  void CleanupWinsock();
 };
 
 void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
@@ -402,15 +413,30 @@ void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
   if (log_callback_) {
     log_callback_(text);
   }
-  {
-    std::lock_guard<std::mutex> lk(status_mtx_);
-    last_error_ = text;
-  }
+  stats_.SetLastError(text);
 }
 
 void NtpServer::Impl::LogSocketError(const char* ctx) {
   int err = WSAGetLastError();
   RecordError(std::string(ctx) + " failed", err);
+}
+
+bool NtpServer::Impl::InitializeWinsock() {
+  WSADATA wsa{};
+  int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+  if (err != 0) {
+    RecordError("WSAStartup failed", err);
+    return false;
+  }
+  wsa_started_ = true;
+  return true;
+}
+
+void NtpServer::Impl::CleanupWinsock() {
+  if (wsa_started_) {
+    WSACleanup();
+    wsa_started_ = false;
+  }
 }
 
 NtpServer::NtpServer() : impl_(new Impl) {}
