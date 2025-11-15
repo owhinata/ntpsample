@@ -142,9 +142,18 @@ class UdpSocket {
   std::mutex queue_mtx_;                   ///< Protects msg_queue_
   std::condition_variable queue_cv_;       ///< Notifies message availability
   std::queue<Message> msg_queue_;          ///< Received message queue
-  bool wsa_started_ = false;               ///< WSAStartup state
   LogCallback log_callback_;
+  class WinsockSession {
+   public:
+    ~WinsockSession() { Stop(); }
+    bool Start();
+    void Stop();
+    int LastError() const { return last_error_; }
 
+   private:
+    bool started_{false};
+    int last_error_{0};
+  } winsock_;
   void LogError(const std::string& text);
   void LogSocketError(const char* ctx);
 };

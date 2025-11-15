@@ -34,21 +34,17 @@ bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
   get_time_ = get_time;
   log_callback_ = log_callback;
 
-  // Initialize Winsock
-  WSADATA wsa{};
-  int err = WSAStartup(MAKEWORD(2, 2), &wsa);
-  if (err != 0) {
-    LogError("WSAStartup failed (err=" + std::to_string(err) + ")");
+  if (!winsock_.Start()) {
+    LogError("WSAStartup failed (err=" + std::to_string(winsock_.LastError()) +
+             ")");
     return false;
   }
-  wsa_started_ = true;
 
   // Create UDP socket
   sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (sock_ == INVALID_SOCKET) {
     LogSocketError("socket");
-    WSACleanup();
-    wsa_started_ = false;
+    winsock_.Stop();
     return false;
   }
 
@@ -62,8 +58,7 @@ bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
     LogSocketError("bind");
     closesocket(sock_);
     sock_ = INVALID_SOCKET;
-    WSACleanup();
-    wsa_started_ = false;
+    winsock_.Stop();
     return false;
   }
 
@@ -74,8 +69,7 @@ bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
     LogError("inet_pton failed for " + server_ip);
     closesocket(sock_);
     sock_ = INVALID_SOCKET;
-    WSACleanup();
-    wsa_started_ = false;
+    winsock_.Stop();
     return false;
   }
 
@@ -105,11 +99,7 @@ void UdpSocket::Close() {
     recv_thread_.join();
   }
 
-  // Clean up Winsock
-  if (wsa_started_) {
-    WSACleanup();
-    wsa_started_ = false;
-  }
+  winsock_.Stop();
 
   // Clear message queue
   std::lock_guard<std::mutex> lock(queue_mtx_);
@@ -259,6 +249,26 @@ void UdpSocket::LogError(const std::string& text) {
 void UdpSocket::LogSocketError(const char* ctx) {
   int err = WSAGetLastError();
   LogError(std::string(ctx) + " failed (err=" + std::to_string(err) + ")");
+}
+
+bool UdpSocket::WinsockSession::Start() {
+  if (started_) return true;
+  WSADATA wsa{};
+  int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+  if (err != 0) {
+    last_error_ = err;
+    return false;
+  }
+  started_ = true;
+  last_error_ = 0;
+  return true;
+}
+
+void UdpSocket::WinsockSession::Stop() {
+  if (started_) {
+    WSACleanup();
+    started_ = false;
+  }
 }
 
 }  // namespace internal

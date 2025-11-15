@@ -73,6 +73,37 @@ inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
   out->tx_timestamp = Hton64(t_tx.ToNtpTimestamp());
 }
 
+class WinsockSession {
+ public:
+  ~WinsockSession() { Stop(); }
+
+  bool Start() {
+    if (started_) return true;
+    WSADATA wsa{};
+    int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (err != 0) {
+      last_error_ = err;
+      return false;
+    }
+    started_ = true;
+    last_error_ = 0;
+    return true;
+  }
+
+  void Stop() {
+    if (started_) {
+      WSACleanup();
+      started_ = false;
+    }
+  }
+
+  int LastError() const { return last_error_; }
+
+ private:
+  bool started_{false};
+  int last_error_{0};
+};
+
 class StatsTracker {
  public:
   void Reset() {
@@ -152,9 +183,12 @@ class NtpServer::Impl {
     log_callback_ = options.LogSink();
     stats_.Reset();
 
-    if (!InitializeWinsock()) return false;
+    if (!winsock_.Start()) {
+      RecordError("WSAStartup failed", winsock_.LastError());
+      return false;
+    }
     if (!CreateAndBindSocket(port)) {
-      CleanupWinsock();
+      winsock_.Stop();
       return false;
     }
     running_.store(true);
@@ -175,7 +209,7 @@ class NtpServer::Impl {
       closesocket(sock_);
       sock_ = INVALID_SOCKET;
     }
-    CleanupWinsock();
+    winsock_.Stop();
   }
 
   void NotifyControlSnapshot() {
@@ -393,13 +427,11 @@ class NtpServer::Impl {
   uint32_t ctrl_seq_{0};
   Options::LogCallback log_callback_;
   StatsTracker stats_;
-  bool wsa_started_{false};
+  WinsockSession winsock_;
 
   internal::ClientTracker client_tracker_;
   void RecordError(const std::string& msg, int err_code);
   void LogSocketError(const char* ctx);
-  bool InitializeWinsock();
-  void CleanupWinsock();
 };
 
 void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
@@ -419,24 +451,6 @@ void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
 void NtpServer::Impl::LogSocketError(const char* ctx) {
   int err = WSAGetLastError();
   RecordError(std::string(ctx) + " failed", err);
-}
-
-bool NtpServer::Impl::InitializeWinsock() {
-  WSADATA wsa{};
-  int err = WSAStartup(MAKEWORD(2, 2), &wsa);
-  if (err != 0) {
-    RecordError("WSAStartup failed", err);
-    return false;
-  }
-  wsa_started_ = true;
-  return true;
-}
-
-void NtpServer::Impl::CleanupWinsock() {
-  if (wsa_started_) {
-    WSACleanup();
-    wsa_started_ = false;
-  }
 }
 
 NtpServer::NtpServer() : impl_(new Impl) {}
