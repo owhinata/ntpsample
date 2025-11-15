@@ -71,6 +71,17 @@ ctest --test-dir build -C Release
 ./build/ntpclock/Release/ntpclock_tests.exe
 ```
 
+### オフライン環境での GoogleTest 依存関係
+
+ntpserver / ntpclock のテストは CMake の `FetchContent` 経由で GoogleTest を取得します。インターネットに接続できない環境では、事前にダウンロードしたアーカイブを次のように渡してください。
+
+```bash
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+  -DNTP_GTEST_ARCHIVE=C:/deps/googletest-1.17.0.tar.gz
+```
+
+`NTP_GTEST_ARCHIVE` を指定した場合、GitHub からの clone ではなくそのアーカイブが使用されます。
+
 ## 使用例
 
 ### 1. シンプルなNTPサーバー

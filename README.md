@@ -71,6 +71,17 @@ Or run test executables directly:
 ./build/ntpclock/Release/ntpclock_tests.exe
 ```
 
+### Offline GoogleTest Dependency
+
+Both ntpserver and ntpclock fetch GoogleTest via CMake’s `FetchContent`. In environments without Internet access, pass a pre-downloaded archive to CMake:
+
+```bash
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+  -DNTP_GTEST_ARCHIVE=C:/deps/googletest-1.17.0.tar.gz
+```
+
+When `NTP_GTEST_ARCHIVE` is set, the build uses that archive instead of cloning from GitHub.
+
 ## Usage Examples
 
 ### 1. Simple NTP Server
