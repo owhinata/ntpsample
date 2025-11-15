@@ -16,6 +16,7 @@ file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
 
 set(NTPSERVER_SOURCES
     src/ntp_server.cc
+    src/ntp_server_options.cc
     src/qpc_clock.cc
     src/ntp_types.cc
     src/time_spec.cc

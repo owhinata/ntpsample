@@ -179,11 +179,14 @@ auto opts = ntpclock::Options::Builder()
 ### NtpServer Settings
 
 ```cpp
+auto server_opts = ntpserver::Options::Builder()
+    .Stratum(2)                                // Stratum level
+    .Precision(-20)                            // Precision (2^-20 seconds)
+    .RefId(ntpserver::MakeRefId("LOCL"))       // Reference ID ("LOCL")
+    .Build();
+
 ntpserver::NtpServer server;
-server.SetStratum(2);                          // Stratum level
-server.SetPrecision(-20);                      // Precision (2^-20 seconds)
-server.SetRefId(htonl(0x4C4F434C));           // Reference ID ("LOCL")
-server.Start(port, &time_source);              // Start with time source
+server.Start(port, &time_source, server_opts);  // Start with time source
 ```
 
 ## API Overview
@@ -205,9 +208,11 @@ clock.Stop();
 ```cpp
 #include "ntpserver/ntp_server.hpp"
 
+auto server_opts =
+    ntpserver::Options::Builder().Stratum(1).RefId(ntpserver::MakeRefId("GPS"))
+        .Build();
 ntpserver::NtpServer server;
-server.SetStratum(1);
-server.Start(9123, &time_source);
+server.Start(9123, &time_source, server_opts);
 server.NotifyControlSnapshot();  // Broadcast Push notification
 server.Stop();
 ```

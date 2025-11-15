@@ -53,7 +53,7 @@ inline uint64_t ToNtpTimestamp(double unix_seconds) {
  * Responsibility: formatting header fields and timestamps only.
  */
 inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
-                                int8_t precision, uint32_t ref_id_be,
+                                int8_t precision, uint32_t ref_id_host,
                                 const TimeSpec& t_ref, const TimeSpec& t_recv,
                                 const TimeSpec& t_tx, NtpPacket* out) {
   out->li_vn_mode =
@@ -63,7 +63,7 @@ inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
   out->precision = precision;
   out->root_delay = htonl(0);
   out->root_dispersion = htonl(0);
-  out->ref_id = ref_id_be;
+  out->ref_id = htonl(ref_id_host);
 
   out->ref_timestamp = Hton64(t_ref.ToNtpTimestamp());
   out->orig_timestamp = req.tx_timestamp;  // echo client's transmit timestamp
@@ -77,12 +77,17 @@ class NtpServer::Impl {
   Impl() = default;
   ~Impl() { Stop(); }
 
-  bool Start(uint16_t port, TimeSource* time_source) {
+  bool Start(uint16_t port, TimeSource* time_source, const Options& options) {
     std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (running_.load()) return true;
 
     // Set time source (use QpcClock if nullptr)
     time_source_ = time_source;
+
+    stratum_ = options.Stratum();
+    precision_ = options.Precision();
+    ref_id_ = options.RefId();
+    client_tracker_.SetRetention(options.ClientRetention());
 
     if (!InitializeWinsock()) return false;
     if (!CreateAndBindSocket(port)) {
@@ -110,13 +115,6 @@ class NtpServer::Impl {
     CleanupWinsock();
   }
 
-  void SetStratum(uint8_t s) { stratum_ = s; }
-  void SetPrecision(int8_t p) { precision_ = p; }
-  void SetRefId(uint32_t ref_be) { ref_id_be_ = ref_be; }
-  void SetClientRetention(std::chrono::steady_clock::duration retention) {
-    client_tracker_.SetRetention(retention);
-  }
-
   void NotifyControlSnapshot() {
     TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
     if (sock_ == INVALID_SOCKET) return;
@@ -124,7 +122,7 @@ class NtpServer::Impl {
 
     // Minimal mode-4 response and EF using SRP helpers
     NtpPacket resp{};
-    BuildResponsePacket({}, stratum_, precision_, ref_id_be_, now, now, now,
+    BuildResponsePacket({}, stratum_, precision_, ref_id_, now, now, now,
                         &resp);
     std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
@@ -247,7 +245,7 @@ class NtpServer::Impl {
     const TimeSpec t_tx = ts->NowUnix();
     if (t_recv) *t_recv = tr;
     NtpPacket resp{};
-    BuildResponsePacket(req, stratum_, precision_, ref_id_be_, t_ref, tr, t_tx,
+    BuildResponsePacket(req, stratum_, precision_, ref_id_, t_ref, tr, t_tx,
                         &resp);
     return resp;
   }
@@ -319,7 +317,7 @@ class NtpServer::Impl {
   TimeSource* time_source_{nullptr};
   uint8_t stratum_{1};
   int8_t precision_{-20};
-  uint32_t ref_id_be_{htonl(0x4C4F434C)};  // "LOCL"
+  uint32_t ref_id_{Options::kDefaultRefId};
   uint32_t ctrl_seq_{0};
 
   internal::ClientTracker client_tracker_;
@@ -328,17 +326,11 @@ class NtpServer::Impl {
 NtpServer::NtpServer() : impl_(new Impl) {}
 NtpServer::~NtpServer() = default;
 
-bool NtpServer::Start(uint16_t port, TimeSource* time_source) {
-  return impl_->Start(port, time_source);
+bool NtpServer::Start(uint16_t port, TimeSource* time_source,
+                      const Options& options) {
+  return impl_->Start(port, time_source, options);
 }
 void NtpServer::Stop() { impl_->Stop(); }
-void NtpServer::SetStratum(uint8_t s) { impl_->SetStratum(s); }
-void NtpServer::SetPrecision(int8_t p) { impl_->SetPrecision(p); }
-void NtpServer::SetRefId(uint32_t ref_id_be) { impl_->SetRefId(ref_id_be); }
-void NtpServer::SetClientRetention(
-    std::chrono::steady_clock::duration retention) {
-  impl_->SetClientRetention(retention);
-}
 void NtpServer::NotifyControlSnapshot() { impl_->NotifyControlSnapshot(); }
 
 }  // namespace ntpserver

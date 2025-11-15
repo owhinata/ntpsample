@@ -106,8 +106,9 @@ int main(int argc, char** argv) {
 
   // Create NtpServer to serve downstream clients using the same QpcClock
   ntpserver::NtpServer server;
-  server.SetStratum(2);  // Stratum 2 (synced from stratum 1)
-  if (!server.Start(serve_port, &qpc_clock)) {
+  auto server_opts =
+      ntpserver::Options::Builder().Stratum(2).Build();  // stratum 2
+  if (!server.Start(serve_port, &qpc_clock, server_opts)) {
     std::fprintf(stderr, "Failed to start NtpServer on port %u\n", serve_port);
     clock_service.Stop();
     return 1;

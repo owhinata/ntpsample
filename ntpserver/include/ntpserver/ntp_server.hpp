@@ -11,6 +11,51 @@
 
 namespace ntpserver {
 
+uint32_t MakeRefId(const char (&tag)[5]);
+
+/**
+ * Immutable configuration options for NtpServer.
+ */
+class Options {
+ public:
+  class Builder {
+   public:
+    Builder();
+    Builder& Stratum(uint8_t v);
+    Builder& Precision(int8_t v);
+    Builder& RefId(uint32_t v);
+    Builder& ClientRetention(std::chrono::steady_clock::duration v);
+    Options Build() const;
+
+   private:
+    uint8_t stratum_;
+    int8_t precision_;
+    uint32_t ref_id_;
+    std::chrono::steady_clock::duration client_retention_;
+  };
+
+  Options();
+
+  uint8_t Stratum() const;
+  int8_t Precision() const;
+  uint32_t RefId() const;
+  std::chrono::steady_clock::duration ClientRetention() const;
+
+  static constexpr uint8_t kDefaultStratum = 1;
+  static constexpr int8_t kDefaultPrecision = -20;
+  static constexpr uint32_t kDefaultRefId = 0x4C4F434C;  // "LOCL"
+  static constexpr std::chrono::steady_clock::duration kDefaultClientRetention =
+      std::chrono::minutes(60);
+
+ private:
+  Options(uint8_t stratum, int8_t precision, uint32_t ref_id,
+          std::chrono::steady_clock::duration retention);
+
+  uint8_t stratum_;
+  int8_t precision_;
+  uint32_t ref_id_;
+  std::chrono::steady_clock::duration client_retention_;
+};
 /**
  * Minimal NTPv4 server (UDP/IPv4).
  *
@@ -28,28 +73,14 @@ class NTP_SERVER_API NtpServer {
    * @brief Starts serving on the given UDP port.
    * @param port UDP port to bind (default: 9123).
    * @param time_source Time source for timestamps (default: QpcClock).
+   * @param options Immutable configuration snapshot (defaults applied).
    * @return true on success, false on failure.
    */
-  bool Start(uint16_t port = 9123, TimeSource* time_source = nullptr);
+  bool Start(uint16_t port = 9123, TimeSource* time_source = nullptr,
+             const Options& options = Options());
 
   /** Stops the server. Safe to call multiple times. */
   void Stop();
-
-  /** Sets stratum (default 1). */
-  void SetStratum(uint8_t stratum);
-  /** Sets precision exponent (default -20). */
-  void SetPrecision(int8_t precision);
-  /** Sets reference ID (network byte order, default: "LOCL"). */
-  void SetRefId(uint32_t ref_id_be);
-  /**
-   * @brief Sets client retention duration for notifications (default 60 min).
-   *
-+   * Clients that have not sent a request within this steady-clock duration
-   * are pruned from the notification list. Using a steady-clock duration
-   * allows pruning to remain correct even if the absolute time jumps.
-   * Passing zero or a negative duration keeps the default (60 minutes).
-   */
-  void SetClientRetention(std::chrono::steady_clock::duration retention);
 
   /**
    * @brief Sends a control snapshot (ABS/RATE via NTP EF) to known clients.
