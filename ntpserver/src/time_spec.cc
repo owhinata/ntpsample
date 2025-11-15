@@ -12,19 +12,12 @@
 namespace ntpserver {
 
 void TimeSpec::Normalize() {
+  // Ensure 0 <= nsec < 1e9 while preserving the represented real value.
   constexpr uint32_t kNsecPerSec = 1000000000u;
 
-  // Handle positive overflow
   if (nsec >= kNsecPerSec) {
-    sec += nsec / kNsecPerSec;
+    sec += static_cast<int64_t>(nsec / kNsecPerSec);
     nsec %= kNsecPerSec;
-  }
-
-  // Handle negative sec with positive nsec (uncommon but possible)
-  // Ensure nsec is always in [0, 999999999]
-  if (sec < 0 && nsec > 0) {
-    sec += 1;
-    nsec = kNsecPerSec - nsec;
   }
 }
 
@@ -33,15 +26,25 @@ double TimeSpec::ToDouble() const {
 }
 
 TimeSpec TimeSpec::FromDouble(double unix_sec) {
-  double int_part;
-  double frac_part = std::modf(unix_sec, &int_part);
+  // Decompose into integer seconds (floor) and fractional part.
+  // This preserves the represented real value up to the rounding
+  // error inherent in double, even for negative times.
+  constexpr double kNsecPerSecD = 1e9;
+  constexpr uint32_t kNsecPerSec = 1000000000u;
 
-  int64_t s = static_cast<int64_t>(int_part);
-  uint32_t ns = static_cast<uint32_t>(frac_part * 1e9 + 0.5);
+  double sec_d = std::floor(unix_sec);
+  double frac = unix_sec - sec_d;  // in [0, 1)
 
-  TimeSpec result(s, ns);
-  result.Normalize();
-  return result;
+  int64_t sec = static_cast<int64_t>(sec_d);
+  uint32_t nsec = static_cast<uint32_t>(std::llround(frac * kNsecPerSecD));
+
+  // Handle possible 1.000000000 rounding.
+  if (nsec >= kNsecPerSec) {
+    nsec -= kNsecPerSec;
+    ++sec;
+  }
+
+  return TimeSpec(sec, nsec);
 }
 
 uint64_t TimeSpec::ToNtpTimestamp() const {
