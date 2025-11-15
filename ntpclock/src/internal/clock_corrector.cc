@@ -89,6 +89,7 @@ void ClockCorrector::ResetOffset() {
   std::lock_guard<std::mutex> lk(mtx_);
   offset_applied_ = ntpserver::TimeSpec{};
   last_returned_ = ntpserver::TimeSpec{};
+  allow_backward_once_ = false;
 }
 
 }  // namespace internal
