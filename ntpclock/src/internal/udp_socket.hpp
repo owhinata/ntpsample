@@ -36,6 +36,7 @@ namespace internal {
  */
 class UdpSocket {
  public:
+  using LogCallback = std::function<void(const std::string&)>;
   /**
    * @brief Message type classification.
    */
@@ -72,7 +73,8 @@ class UdpSocket {
    * @return true on success, false on failure.
    */
   bool Open(const std::string& server_ip, uint16_t server_port,
-            std::function<ntpserver::TimeSpec()> get_time);
+            std::function<ntpserver::TimeSpec()> get_time,
+            LogCallback log_callback = LogCallback());
 
   /**
    * @brief Close socket and stop background thread.
@@ -141,6 +143,10 @@ class UdpSocket {
   std::condition_variable queue_cv_;       ///< Notifies message availability
   std::queue<Message> msg_queue_;          ///< Received message queue
   bool wsa_started_ = false;               ///< WSAStartup state
+  LogCallback log_callback_;
+
+  void LogError(const std::string& text);
+  void LogSocketError(const char* ctx);
 };
 
 }  // namespace internal

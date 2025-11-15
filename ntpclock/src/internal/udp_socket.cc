@@ -25,16 +25,20 @@ UdpSocket::~UdpSocket() { Close(); }
 bool UdpSocket::IsOpen() const { return sock_ != INVALID_SOCKET; }
 
 bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
-                     std::function<ntpserver::TimeSpec()> get_time) {
+                     std::function<ntpserver::TimeSpec()> get_time,
+                     LogCallback log_callback) {
   if (IsOpen()) {
     return false;  // Already open
   }
 
   get_time_ = get_time;
+  log_callback_ = log_callback;
 
   // Initialize Winsock
   WSADATA wsa{};
-  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+  int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+  if (err != 0) {
+    LogError("WSAStartup failed (err=" + std::to_string(err) + ")");
     return false;
   }
   wsa_started_ = true;
@@ -42,6 +46,7 @@ bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
   // Create UDP socket
   sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (sock_ == INVALID_SOCKET) {
+    LogSocketError("socket");
     WSACleanup();
     wsa_started_ = false;
     return false;
@@ -54,6 +59,7 @@ bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
   local_addr.sin_port = 0;  // Let OS choose port
   if (bind(sock_, reinterpret_cast<sockaddr*>(&local_addr),
            sizeof(local_addr)) == SOCKET_ERROR) {
+    LogSocketError("bind");
     closesocket(sock_);
     sock_ = INVALID_SOCKET;
     WSACleanup();
@@ -65,6 +71,7 @@ bool UdpSocket::Open(const std::string& server_ip, uint16_t server_port,
   server_addr_.sin_family = AF_INET;
   server_addr_.sin_port = htons(server_port);
   if (inet_pton(AF_INET, server_ip.c_str(), &server_addr_.sin_addr) != 1) {
+    LogError("inet_pton failed for " + server_ip);
     closesocket(sock_);
     sock_ = INVALID_SOCKET;
     WSACleanup();
@@ -120,7 +127,11 @@ bool UdpSocket::Send(const std::vector<uint8_t>& data) {
       sendto(sock_, reinterpret_cast<const char*>(data.data()),
              static_cast<int>(data.size()), 0,
              reinterpret_cast<sockaddr*>(&server_addr_), sizeof(server_addr_));
-  return sent == static_cast<int>(data.size());
+  if (sent == static_cast<int>(data.size())) {
+    return true;
+  }
+  LogSocketError("sendto");
+  return false;
 }
 
 bool UdpSocket::WaitMessage(int timeout_ms, Message* out_msg) {
@@ -163,6 +174,7 @@ void UdpSocket::ReceiveLoop() {
     if (recvd < 0) {
       if (running_.load()) {
         // Unexpected error while still running
+        LogSocketError("recvfrom");
         continue;
       } else {
         // Socket closed intentionally during shutdown
@@ -172,6 +184,9 @@ void UdpSocket::ReceiveLoop() {
 
     // Ignore packets smaller than minimum NTP packet size
     if (recvd < static_cast<int>(kNtpPacketSize)) {
+      if (recvd > 0) {
+        LogError("recvfrom short packet (" + std::to_string(recvd) + " bytes)");
+      }
       continue;
     }
 
@@ -233,6 +248,17 @@ UdpSocket::MessageType UdpSocket::ClassifyMessage(
   }
 
   return MessageType::ExchangeResponse;
+}
+
+void UdpSocket::LogError(const std::string& text) {
+  if (log_callback_) {
+    log_callback_(text);
+  }
+}
+
+void UdpSocket::LogSocketError(const char* ctx) {
+  int err = WSAGetLastError();
+  LogError(std::string(ctx) + " failed (err=" + std::to_string(err) + ")");
 }
 
 }  // namespace internal

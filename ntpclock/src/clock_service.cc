@@ -152,6 +152,8 @@ struct ntpclock::ClockService::Impl {
   // Networking
   internal::UdpSocket udp_socket;
   std::atomic<bool> exchange_abort{false};
+  std::mutex socket_err_mtx;
+  std::string socket_last_error;
 
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms,
                    std::vector<uint8_t>* out_response, std::string* err);
@@ -302,6 +304,8 @@ struct ntpclock::ClockService::Impl {
 
   // Worker and helper methods
   void Loop();
+  void ReportSocketError(const std::string& msg);
+  std::string GetSocketError();
 };
 
 namespace {
@@ -512,6 +516,8 @@ void ntpclock::ClockService::Impl::SetBaseStatusFields(
   st->offset_s = sample_offset_s;
   st->last_update = ntpserver::TimeSpec::FromDouble(tnow);
   st->last_error.clear();
+  const std::string sock_err = GetSocketError();
+  if (!sock_err.empty()) st->last_error = sock_err;
 }
 
 ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
@@ -671,6 +677,22 @@ void ntpclock::ClockService::Impl::Loop() {
   }
 }
 
+void ntpclock::ClockService::Impl::ReportSocketError(const std::string& msg) {
+  {
+    std::lock_guard<std::mutex> lk(socket_err_mtx);
+    socket_last_error = msg;
+  }
+  {
+    std::lock_guard<std::mutex> lk(status_mtx);
+    status.last_error = msg;
+  }
+}
+
+std::string ntpclock::ClockService::Impl::GetSocketError() {
+  std::lock_guard<std::mutex> lk(socket_err_mtx);
+  return socket_last_error;
+}
+
 // ---------------- ClockService ----------------
 ntpclock::ClockService::ClockService() : p_(new Impl()) {}
 ntpclock::ClockService::~ClockService() { Stop(); }
@@ -695,7 +717,10 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   auto get_time = [time_source]() -> ntpserver::TimeSpec {
     return time_source ? time_source->NowUnix() : ntpserver::TimeSpec{};
   };
-  if (!p_->udp_socket.Open(ip, port, get_time)) {
+  auto log_fn = [impl = p_.get()](const std::string& msg) {
+    if (impl) impl->ReportSocketError(msg);
+  };
+  if (!p_->udp_socket.Open(ip, port, get_time, log_fn)) {
     p_->time_source = nullptr;
     return false;
   }
