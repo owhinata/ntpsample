@@ -13,7 +13,7 @@
  *
  * Usage:
  *   ntpclock_gateway --upstream-ip 127.0.0.1 --upstream-port 9123 \
- *                    --serve-port 9124 --poll 10000
+ *                    --serve-port 9124 --poll 10000 --min-samples 3
  */
 
 #include <atomic>
@@ -45,7 +45,8 @@ void PrintUsage() {
       "  --serve-port N       Port to serve on (default 9124)\n"
       "  --poll ms            Polling interval in ms (default 10000)\n"
       "  --step ms            Step threshold in ms (default 200)\n"
-      "  --slew ms_per_s      Slew rate in ms/s (default 5.0)\n");
+      "  --slew ms_per_s      Slew rate in ms/s (default 5.0)\n"
+      "  --min-samples n      Min samples to lock (default 3)\n");
 }
 
 }  // namespace
@@ -73,6 +74,8 @@ int main(int argc, char** argv) {
       builder.StepThresholdMs(std::atoi(argv[++i]));
     } else if (a == "--slew" && need(1)) {
       builder.SlewRateMsPerSec(std::atof(argv[++i]));
+    } else if (a == "--min-samples" && need(1)) {
+      builder.MinSamplesToLock(std::atoi(argv[++i]));
     } else if (a == "--help" || a == "-h") {
       PrintUsage();
       return 0;

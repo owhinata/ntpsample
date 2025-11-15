@@ -6,7 +6,7 @@
  * Usage:
  *   ntpclock_example --ip 127.0.0.1 --port 9123 \
  *     --poll 10000 --step 200 --slew 5.0 --max-rtt 100 \
- *     --offset-window 5 --skew-window 10
+ *     --min-samples 3 --offset-window 5 --skew-window 10
  */
 
 #include <algorithm>
@@ -95,6 +95,7 @@ void PrintUsage() {
                "  --step ms            (default 200)\n"
                "  --slew ms_per_s      (default 5.0)\n"
                "  --max-rtt ms         (default 100)\n"
+               "  --min-samples n      (default 3)\n"
                "  --offset-window n    (default 5)\n"
                "  --skew-window n      (default 10)\n"
                "  --utc                (default: JST)\n");
@@ -123,6 +124,8 @@ int main(int argc, char** argv) {
       builder.SlewRateMsPerSec(std::atof(argv[++i]));
     } else if (a == "--max-rtt" && need(1)) {
       builder.MaxRttMs(std::atoi(argv[++i]));
+    } else if (a == "--min-samples" && need(1)) {
+      builder.MinSamplesToLock(std::atoi(argv[++i]));
     } else if (a == "--offset-window" && need(1)) {
       builder.OffsetWindow(std::atoi(argv[++i]));
     } else if (a == "--skew-window" && need(1)) {
