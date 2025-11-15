@@ -242,10 +242,6 @@ class MyTimeSource : public ntpserver::TimeSource {
 };
 ```
 
-## 既知の問題
-
-- `ClockServiceTest.StepAllowsBackwardOnce`はタイミング競合により時々失敗する可能性があります（機能には影響しません）
-
 ## ライセンス
 
 Copyright (c) 2025
