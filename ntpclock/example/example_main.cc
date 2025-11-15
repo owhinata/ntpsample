@@ -1,3 +1,4 @@
+// Copyright (c) 2025 <Your Name>
 /**
  * @file
  * @brief Example program for ClockService with simple CLI options.
@@ -8,27 +9,31 @@
  *     --offset-window 5 --skew-window 10
  */
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <thread>
-#include <chrono>
 #include <vector>
-#include <algorithm>
 
 #include "ntpclock/clock_service.hpp"
 #include "ntpserver/qpc_clock.hpp"
-#include <ctime>
-#include <sstream>
-#include <iomanip>
 
 namespace {
 // On Windows consoles, enable ANSI escape processing for in-place refresh.
 #if defined(_WIN32)
 #include <windows.h>
 
-void ShowCur() { std::printf("\x1b[?25h"); std::fflush(stdout); }
+void ShowCur() {
+  std::printf("\x1b[?25h");
+  std::fflush(stdout);
+}
 
 BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
   // Handle Ctrl+C, Ctrl+Break, and console close events
@@ -57,7 +62,10 @@ int TermWidth() {
   return 120;
 }
 #else
-void ShowCur() { std::printf("\x1b[?25h"); std::fflush(stdout); }
+void ShowCur() {
+  std::printf("\x1b[?25h");
+  std::fflush(stdout);
+}
 void EnableVirtualTerminal() {}
 int TermWidth() { return 120; }
 #endif
@@ -157,8 +165,8 @@ int main(int argc, char** argv) {
     {
       const int offset = opt_utc ? 0 : 9 * 3600;
       const char* tzlabel = opt_utc ? "UTC" : "JST";
-      long long isec = static_cast<long long>(now_s);
-      long long adj = isec + offset;
+      int64_t isec = static_cast<int64_t>(now_s);
+      int64_t adj = isec + offset;
       std::tm tm{};
 #if defined(_WIN32)
       time_t t = static_cast<time_t>(adj);
@@ -170,38 +178,68 @@ int main(int argc, char** argv) {
       double frac = now_s - static_cast<double>(isec);
       if (frac < 0) frac = 0;
       int ms = static_cast<int>(frac * 1000.0 + 0.5);
-      if (ms >= 1000) { ms -= 1000; }
+      if (ms >= 1000) {
+        ms -= 1000;
+      }
       char tbuf[64];
       std::snprintf(tbuf, sizeof(tbuf),
                     "now=%04d-%02d-%02d %02d:%02d:%02d.%03d %s",
-                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                    tm.tm_hour, tm.tm_min, tm.tm_sec, ms, tzlabel);
+                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                    tm.tm_min, tm.tm_sec, ms, tzlabel);
       now_line = tbuf;
     }
-    std::string err = st.last_error.empty() ? std::string("") : OneLine(st.last_error);
+    std::string err =
+        st.last_error.empty() ? std::string("") : OneLine(st.last_error);
     int cap = (cols - 7 > 0) ? (cols - 7) : 0;
-    if ((int)err.size() > cap) err.resize(static_cast<size_t>(cap));
+    if (static_cast<int>(err.size()) > cap) {
+      err.resize(static_cast<size_t>(cap));
+    }
 
     char buf[256];
     std::vector<std::string> cur;
     cur.reserve(11);
     cur.emplace_back(now_line);
-    std::snprintf(buf, sizeof(buf), "sync=%s", st.synchronized ? "true" : "false"); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "rtt_ms=%d  delay_s=%.3f", st.rtt_ms, st.last_delay_s); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "offset_s=%.6f  skew_ppm=%.1f", st.offset_s, st.skew_ppm); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "samples=%d  last_update=%.3f", st.samples, st.last_update.ToDouble()); cur.emplace_back(buf);
-    const char* corr = st.last_correction == ntpclock::Status::Correction::Step ? "Step"
-                        : (st.last_correction == ntpclock::Status::Correction::Slew ? "Slew" : "None");
-    std::snprintf(buf, sizeof(buf), "last_corr=%s  amount=%.6f", corr, st.last_correction_amount_s); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "offset_window=%d  skew_window=%d  window_count=%d", st.offset_window, st.skew_window, st.window_count); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "median=%.6f  min=%.6f  max=%.6f", st.offset_median_s, st.offset_min_s, st.offset_max_s); cur.emplace_back(buf);
-    std::snprintf(buf, sizeof(buf), "applied=%.6f  target=%.6f", st.offset_applied_s, st.offset_target_s); cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "sync=%s",
+                  st.synchronized ? "true" : "false");
+    cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "rtt_ms=%d  delay_s=%.3f", st.rtt_ms,
+                  st.last_delay_s);
+    cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "offset_s=%.6f  skew_ppm=%.1f", st.offset_s,
+                  st.skew_ppm);
+    cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "samples=%d  last_update=%.3f", st.samples,
+                  st.last_update.ToDouble());
+    cur.emplace_back(buf);
+    const char* corr =
+        st.last_correction == ntpclock::Status::Correction::Step
+            ? "Step"
+            : (st.last_correction == ntpclock::Status::Correction::Slew
+                   ? "Slew"
+                   : "None");
+    std::snprintf(buf, sizeof(buf), "last_corr=%s  amount=%.6f", corr,
+                  st.last_correction_amount_s);
+    cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf),
+                  "offset_window=%d  skew_window=%d  window_count=%d",
+                  st.offset_window, st.skew_window, st.window_count);
+    cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "median=%.6f  min=%.6f  max=%.6f",
+                  st.offset_median_s, st.offset_min_s, st.offset_max_s);
+    cur.emplace_back(buf);
+    std::snprintf(buf, sizeof(buf), "applied=%.6f  target=%.6f",
+                  st.offset_applied_s, st.offset_target_s);
+    cur.emplace_back(buf);
     cur.emplace_back(std::string("error=") + err);
     while (cur.size() < prev.size()) cur.emplace_back("");
-    for (auto& s : cur) { if ((int)s.size() > cols) s.resize(cols); }
+    for (auto& s : cur) {
+      if (static_cast<int>(s.size()) > cols) {
+        s.resize(static_cast<size_t>(cols));
+      }
+    }
     for (size_t i = 0; i < cur.size(); ++i) {
       if (prev[i] == cur[i]) continue;
-      MoveRow((int)i + 1);
+      MoveRow(static_cast<int>(i) + 1);
       std::printf("\x1b[2K");
       std::fwrite(cur[i].data(), 1, cur[i].size(), stdout);
       std::printf("\n");

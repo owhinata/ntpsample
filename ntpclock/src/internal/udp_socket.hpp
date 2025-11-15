@@ -49,9 +49,9 @@ class UdpSocket {
    * @brief Received message with metadata.
    */
   struct Message {
-    MessageType type;                ///< Classified message type
-    std::vector<uint8_t> data;       ///< Raw packet bytes
-    ntpserver::TimeSpec recv_time;   ///< Reception timestamp
+    MessageType type;               ///< Classified message type
+    std::vector<uint8_t> data;      ///< Raw packet bytes
+    ntpserver::TimeSpec recv_time;  ///< Reception timestamp
   };
 
   UdpSocket() = default;
@@ -133,15 +133,15 @@ class UdpSocket {
    */
   MessageType ClassifyMessage(const std::vector<uint8_t>& data);
 
-  SOCKET sock_ = INVALID_SOCKET;                       ///< Windows socket handle
-  sockaddr_in server_addr_{};                          ///< Server address for send()
-  std::function<ntpserver::TimeSpec()> get_time_;      ///< Timestamp callback
-  std::atomic<bool> running_{false};                   ///< Receive thread control flag
+  SOCKET sock_ = INVALID_SOCKET;  ///< Windows socket handle
+  sockaddr_in server_addr_{};     ///< Server address for send()
+  std::function<ntpserver::TimeSpec()> get_time_;  ///< Timestamp callback
+  std::atomic<bool> running_{false};  ///< Receive thread control flag
   std::thread recv_thread_;           ///< Background receive thread
 
-  std::mutex queue_mtx_;                   ///< Protects msg_queue_
-  std::condition_variable queue_cv_;       ///< Notifies message availability
-  std::queue<Message> msg_queue_;          ///< Received message queue
+  std::mutex queue_mtx_;              ///< Protects msg_queue_
+  std::condition_variable queue_cv_;  ///< Notifies message availability
+  std::queue<Message> msg_queue_;     ///< Received message queue
   LogCallback log_callback_;
   class WinsockSession {
    public:

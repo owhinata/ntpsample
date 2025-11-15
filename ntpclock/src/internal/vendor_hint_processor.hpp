@@ -32,9 +32,9 @@ class VendorHintProcessor {
    * @brief Result of processing a vendor hint.
    */
   struct HintResult {
-    bool reset_needed = false;       ///< Whether estimator reset is needed
-    bool abs_applied = false;        ///< Whether SetAbsolute was applied
-    ntpserver::TimeSpec step_amount; ///< Amount of step (if abs_applied)
+    bool reset_needed = false;        ///< Whether estimator reset is needed
+    bool abs_applied = false;         ///< Whether SetAbsolute was applied
+    ntpserver::TimeSpec step_amount;  ///< Amount of step (if abs_applied)
   };
 
   VendorHintProcessor() = default;
@@ -45,7 +45,8 @@ class VendorHintProcessor {
    * @param rx_data Raw NTP packet bytes (header + optional extensions).
    * @param ntp_packet_size Size of the basic NTP packet structure.
    * @param time_source Target TimeSource to apply hints to.
-   * @param step_threshold_s Threshold for applying absolute time changes (seconds).
+   * @param step_threshold_s Threshold for applying absolute time changes
+   * (seconds).
    * @return HintResult indicating what was applied and whether reset is needed.
    *
    * Parses vendor extension fields, deduplicates by sequence number,
@@ -84,7 +85,8 @@ class VendorHintProcessor {
    *
    * @param payload Parsed vendor extension payload.
    * @param time_source Target TimeSource.
-   * @param step_threshold_s Threshold for applying absolute time changes (seconds).
+   * @param step_threshold_s Threshold for applying absolute time changes
+   * (seconds).
    * @param out_step_amount Output parameter for step amount.
    * @return true if absolute time was changed, false otherwise.
    */
@@ -93,8 +95,8 @@ class VendorHintProcessor {
                          double step_threshold_s,
                          ntpserver::TimeSpec* out_step_amount);
 
-  bool have_seq_ = false;   ///< Whether last_seq_ has been initialized
-  uint32_t last_seq_ = 0;   ///< Last processed sequence number for deduplication
+  bool have_seq_ = false;  ///< Whether last_seq_ has been initialized
+  uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
 
   /**
    * @brief Return true if seq is newer than last_seq_, accounting for wrap.

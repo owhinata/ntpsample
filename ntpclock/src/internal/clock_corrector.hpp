@@ -56,15 +56,16 @@ class ClockCorrector {
    * @brief Allow the next time reading to go backward once.
    *
    * Typically called after external time adjustments (e.g., vendor hints
-   * applying SetAbsolute) to permit GetMonotonicTime() to reflect the backward jump.
+   * applying SetAbsolute) to permit GetMonotonicTime() to reflect the backward
+   * jump.
    */
   void AllowBackwardOnce();
 
   /**
    * @brief Get monotonic corrected time.
    *
-   * Called from NowUnix() at arbitrary times to read the current corrected time.
-   * Applies the offset correction and enforces monotonic progression.
+   * Called from NowUnix() at arbitrary times to read the current corrected
+   * time. Applies the offset correction and enforces monotonic progression.
    *
    * @param base_time The raw base time from TimeSource.
    * @return The monotonic corrected time (base + offset, with monotonicity

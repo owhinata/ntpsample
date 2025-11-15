@@ -1,3 +1,4 @@
+// Copyright (c) 2025 <Your Name>
 /**
  * @file
  * @test OptionsTest.BuilderAndStream
@@ -9,16 +10,25 @@
  *
  * @expected Stream contains key fields like "poll=".
  */
-#include <gtest/gtest.h>
-#include <chrono>
-
 #include "ntpclock/clock_service.hpp"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <sstream>
+#include <string>
+#include <thread>
+
 #include "ntpserver/ntp_server.hpp"
 #include "ntpserver/qpc_clock.hpp"
 
 using ntpclock::ClockService;
 using ntpclock::Options;
 using ntpclock::Status;
+using std::chrono::duration;
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
 
 TEST(OptionsTest, BuilderAndStream) {
   auto opts = Options::Builder()
@@ -57,7 +67,8 @@ namespace {
 /** Simple fake time source for tests. */
 class FakeTimeSource : public ntpserver::TimeSource {
  public:
-  explicit FakeTimeSource(double start_unix) : start_tp_(std::chrono::steady_clock::now()) {
+  explicit FakeTimeSource(double start_unix)
+      : start_tp_(std::chrono::steady_clock::now()) {
     ntpserver::TimeSpec ts = ntpserver::TimeSpec::FromDouble(start_unix);
     start_sec_.store(ts.sec);
     start_nsec_.store(ts.nsec);
@@ -75,7 +86,8 @@ class FakeTimeSource : public ntpserver::TimeSource {
     start_tp_ = std::chrono::steady_clock::now();
   }
   void SetRate(double rate) override { (void)rate; }
-  void SetAbsoluteAndRate(const ntpserver::TimeSpec& time, double rate) override {
+  void SetAbsoluteAndRate(const ntpserver::TimeSpec& time,
+                          double rate) override {
     // Just set absolute; rate is not emulated in tests
     SetAbsolute(time);
     (void)rate;
@@ -85,7 +97,8 @@ class FakeTimeSource : public ntpserver::TimeSource {
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto sec = std::chrono::duration_cast<std::chrono::seconds>(duration);
-    auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(duration - sec);
+    auto nsec =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(duration - sec);
     start_sec_.store(sec.count());
     start_nsec_.store(static_cast<uint32_t>(nsec.count()));
     start_tp_ = std::chrono::steady_clock::now();
@@ -116,7 +129,6 @@ class FakeTimeSource : public ntpserver::TimeSource {
  * @expected No backward jumps are observed during slew-only corrections.
  */
 TEST(ClockServiceTest, SlewIsMonotonic) {
-  using namespace std::chrono;
   // Server with time ahead by 50 ms
   double now = duration<double>(system_clock::now().time_since_epoch()).count();
   FakeTimeSource server_ts(now + 0.050);
@@ -136,7 +148,7 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
   std::this_thread::sleep_for(milliseconds(700));
 
   auto st = svc.GetStatus();
-  EXPECT_TRUE(st.samples >= 3);
+  EXPECT_GE(st.samples, 3);
 
   double prev = svc.NowUnix().ToDouble();
   for (int i = 0; i < 50; ++i) {
@@ -163,7 +175,6 @@ TEST(ClockServiceTest, SlewIsMonotonic) {
  *           non-decreasing again.
  */
 TEST(ClockServiceTest, StepAllowsBackwardOnce) {
-  using namespace std::chrono;
   double now = duration<double>(system_clock::now().time_since_epoch()).count();
   FakeTimeSource server_ts(now);
   FakeTimeSource client_ts(now);

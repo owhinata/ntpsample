@@ -1,6 +1,8 @@
+// Copyright (c) 2025 <Your Name>
 /**
  * @file gateway_main.cc
- * @brief NTP Gateway: Sync with upstream server and serve to downstream clients.
+ * @brief NTP Gateway: Sync with upstream server and serve to downstream
+ * clients.
  *
  * This application combines ClockService (NTP client) and NtpServer to create
  * an NTP gateway that:
@@ -14,12 +16,12 @@
  *                    --serve-port 9124 --poll 10000
  */
 
+#include <atomic>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <csignal>
-#include <atomic>
-#include <chrono>
 #include <string>
 #include <thread>
 
@@ -31,20 +33,19 @@ namespace {
 
 std::atomic<bool> g_running{true};
 
-void SignalHandler(int) {
-  g_running.store(false);
-}
+void SignalHandler(int) { g_running.store(false); }
 
 void PrintUsage() {
-  std::fprintf(stderr,
-               "Usage: ntpclock_gateway [options]\n"
-               "Options:\n"
-               "  --upstream-ip IP     Upstream NTP server IP (default 127.0.0.1)\n"
-               "  --upstream-port N    Upstream NTP server port (default 9123)\n"
-               "  --serve-port N       Port to serve on (default 9124)\n"
-               "  --poll ms            Polling interval in ms (default 10000)\n"
-               "  --step ms            Step threshold in ms (default 200)\n"
-               "  --slew ms_per_s      Slew rate in ms/s (default 5.0)\n");
+  std::fprintf(
+      stderr,
+      "Usage: ntpclock_gateway [options]\n"
+      "Options:\n"
+      "  --upstream-ip IP     Upstream NTP server IP (default 127.0.0.1)\n"
+      "  --upstream-port N    Upstream NTP server port (default 9123)\n"
+      "  --serve-port N       Port to serve on (default 9124)\n"
+      "  --poll ms            Polling interval in ms (default 10000)\n"
+      "  --step ms            Step threshold in ms (default 200)\n"
+      "  --slew ms_per_s      Slew rate in ms/s (default 5.0)\n");
 }
 
 }  // namespace
@@ -89,7 +90,8 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, SignalHandler);
 
   // Create shared QpcClock for both ClockService and NtpServer
-  // This allows vendor hints (rate/abs) to propagate from upstream to downstream
+  // This allows vendor hints (rate/abs) to propagate from upstream to
+  // downstream
   ntpserver::QpcClock& qpc_clock = ntpserver::QpcClock::Instance();
 
   // Create ClockService to sync with upstream server
@@ -98,8 +100,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
-  std::printf("ClockService started, syncing with %s:%u\n",
-              upstream_ip.c_str(), upstream_port);
+  std::printf("ClockService started, syncing with %s:%u\n", upstream_ip.c_str(),
+              upstream_port);
 
   // Wait a bit for initial synchronization
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -132,11 +134,9 @@ int main(int argc, char** argv) {
       }
     }
 
-    std::printf("\r[Gateway Status] sync=%s rtt=%dms offset=%.6fs samples=%d   ",
-                st.synchronized ? "YES" : "NO ",
-                st.rtt_ms,
-                st.offset_s,
-                st.samples);
+    std::printf(
+        "\r[Gateway Status] sync=%s rtt=%dms offset=%.6fs samples=%d   ",
+        st.synchronized ? "YES" : "NO ", st.rtt_ms, st.offset_s, st.samples);
     std::fflush(stdout);
   }
 

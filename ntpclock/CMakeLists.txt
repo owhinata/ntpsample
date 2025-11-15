@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 file(GLOB NTPCLK_HEADERS CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/include/ntpclock/*.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/*.hpp"
 )
 set(NTPCLK_SOURCES
   src/clock_service.cc
@@ -52,6 +53,17 @@ foreach(f IN LISTS NTPCLK_SOURCES NTPCLK_HEADERS)
     list(APPEND _fmt "${f}")
   endif()
 endforeach()
+if(NTP_CLOCK_BUILD_EXAMPLE)
+  list(APPEND _fmt
+    "${CMAKE_CURRENT_SOURCE_DIR}/example/example_main.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/example/gateway_main.cc")
+endif()
+if(NTP_CLOCK_BUILD_TESTS)
+  file(GLOB _fmt_tests CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp")
+  list(APPEND _fmt ${_fmt_tests})
+endif()
 ntp_add_clang_format(ntpclock ${_fmt})
 ntp_add_cpplint(ntpclock ${_fmt})
 

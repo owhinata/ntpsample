@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/ntpserver/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/*.hpp"
 )
 
 set(NTPSERVER_SOURCES
@@ -112,6 +113,9 @@ if(NTP_SERVER_BUILD_EXAMPLE)
   list(APPEND _lint_files "${CMAKE_CURRENT_SOURCE_DIR}/example/example_main.cc")
 endif()
 if(NTP_SERVER_BUILD_TESTS)
-  list(APPEND _lint_files "${CMAKE_CURRENT_SOURCE_DIR}/tests/ntp_server_test.cc")
+  file(GLOB _lint_test_files CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp")
+  list(APPEND _lint_files ${_lint_test_files})
 endif()
 ntp_add_cpplint(ntpserver ${_lint_files})

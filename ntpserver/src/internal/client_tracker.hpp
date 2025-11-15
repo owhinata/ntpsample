@@ -35,7 +35,8 @@ class ClientTracker {
   struct Client {
     sockaddr_in addr{};    ///< IPv4 socket address (IP + port).
     TimeSpec last_seen{};  ///< Last request absolute time (for diagnostics).
-    std::chrono::steady_clock::time_point last_seen_mono{};  ///< Monotonic timestamp.
+    std::chrono::steady_clock::time_point
+        last_seen_mono{};  ///< Monotonic timestamp.
   };
 
   /**
@@ -105,8 +106,7 @@ class ClientTracker {
 
  private:
   std::vector<Client> clients_;
-  std::chrono::steady_clock::duration retention_{
-      std::chrono::minutes(60)};
+  std::chrono::steady_clock::duration retention_{std::chrono::minutes(60)};
 };
 
 }  // namespace internal
