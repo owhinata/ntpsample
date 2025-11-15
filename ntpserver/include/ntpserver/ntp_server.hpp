@@ -1,8 +1,10 @@
 // Copyright (c) 2025 <Your Name>
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -18,6 +20,8 @@ uint32_t MakeRefId(const char (&tag)[5]);
  */
 class Options {
  public:
+  using LogCallback = std::function<void(const std::string&)>;
+
   class Builder {
    public:
     Builder();
@@ -25,6 +29,7 @@ class Options {
     Builder& Precision(int8_t v);
     Builder& RefId(uint32_t v);
     Builder& ClientRetention(std::chrono::steady_clock::duration v);
+    Builder& LogSink(LogCallback cb);
     Options Build() const;
 
    private:
@@ -32,6 +37,7 @@ class Options {
     int8_t precision_;
     uint32_t ref_id_;
     std::chrono::steady_clock::duration client_retention_;
+    LogCallback log_sink_cb_;
   };
 
   Options();
@@ -40,6 +46,7 @@ class Options {
   int8_t Precision() const;
   uint32_t RefId() const;
   std::chrono::steady_clock::duration ClientRetention() const;
+  const LogCallback& LogSink() const;
 
   static constexpr uint8_t kDefaultStratum = 1;
   static constexpr int8_t kDefaultPrecision = -20;
@@ -49,12 +56,24 @@ class Options {
 
  private:
   Options(uint8_t stratum, int8_t precision, uint32_t ref_id,
-          std::chrono::steady_clock::duration retention);
+          std::chrono::steady_clock::duration retention, LogCallback log_cb);
 
   uint8_t stratum_;
   int8_t precision_;
   uint32_t ref_id_;
   std::chrono::steady_clock::duration client_retention_;
+  LogCallback log_callback_;
+};
+
+struct ServerStats {
+  uint64_t packets_received = 0;    ///< Valid NTP datagrams processed
+  uint64_t packets_sent = 0;        ///< Responses sent successfully
+  uint64_t recv_errors = 0;         ///< recvfrom() failures
+  uint64_t drop_short_packets = 0;  ///< Datagrams shorter than NTP header
+  uint64_t send_errors = 0;         ///< sendto() failures or partial sends
+  uint64_t push_notifications = 0;  ///< NotifyControlSnapshot sends
+  uint64_t active_clients = 0;      ///< Currently tracked client endpoints
+  std::string last_error;           ///< Latest error message (with code)
 };
 /**
  * Minimal NTPv4 server (UDP/IPv4).
@@ -81,6 +100,9 @@ class NTP_SERVER_API NtpServer {
 
   /** Stops the server. Safe to call multiple times. */
   void Stop();
+
+  /** Returns latest statistics snapshot (thread-safe). */
+  ServerStats GetStats() const;
 
   /**
    * @brief Sends a control snapshot (ABS/RATE via NTP EF) to known clients.

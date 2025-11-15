@@ -1,4 +1,6 @@
 // Copyright (c) 2025 <Your Name>
+#include <utility>
+
 #include "ntpserver/ntp_server.hpp"
 
 namespace ntpserver {
@@ -14,6 +16,7 @@ Options::Builder::Builder() {
   precision_ = Options::kDefaultPrecision;
   ref_id_ = Options::kDefaultRefId;
   client_retention_ = Options::kDefaultClientRetention;
+  log_sink_cb_ = Options::LogCallback();
 }
 
 Options::Builder& Options::Builder::Stratum(uint8_t v) {
@@ -37,8 +40,14 @@ Options::Builder& Options::Builder::ClientRetention(
   return *this;
 }
 
+Options::Builder& Options::Builder::LogSink(LogCallback cb) {
+  log_sink_cb_ = cb;
+  return *this;
+}
+
 Options Options::Builder::Build() const {
-  return Options(stratum_, precision_, ref_id_, client_retention_);
+  return Options(stratum_, precision_, ref_id_, client_retention_,
+                 log_sink_cb_);
 }
 
 Options::Options() {
@@ -46,14 +55,17 @@ Options::Options() {
   precision_ = kDefaultPrecision;
   ref_id_ = kDefaultRefId;
   client_retention_ = kDefaultClientRetention;
+  log_callback_ = LogCallback();
 }
 
 Options::Options(uint8_t stratum, int8_t precision, uint32_t ref_id,
-                 std::chrono::steady_clock::duration retention) {
+                 std::chrono::steady_clock::duration retention,
+                 LogCallback log_cb) {
   stratum_ = stratum;
   precision_ = precision;
   ref_id_ = ref_id;
   client_retention_ = retention;
+  log_callback_ = log_cb;
 }
 
 uint8_t Options::Stratum() const { return stratum_; }
@@ -65,5 +77,7 @@ uint32_t Options::RefId() const { return ref_id_; }
 std::chrono::steady_clock::duration Options::ClientRetention() const {
   return client_retention_;
 }
+
+const Options::LogCallback& Options::LogSink() const { return log_callback_; }
 
 }  // namespace ntpserver

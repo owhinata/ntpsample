@@ -18,6 +18,8 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -88,6 +90,17 @@ class NtpServer::Impl {
     precision_ = options.Precision();
     ref_id_ = options.RefId();
     client_tracker_.SetRetention(options.ClientRetention());
+    log_callback_ = options.LogSink();
+    packets_received_.store(0, std::memory_order_relaxed);
+    packets_sent_.store(0, std::memory_order_relaxed);
+    recv_errors_.store(0, std::memory_order_relaxed);
+    short_packets_.store(0, std::memory_order_relaxed);
+    send_errors_.store(0, std::memory_order_relaxed);
+    push_notifications_.store(0, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lk(status_mtx_);
+      last_error_.clear();
+    }
 
     if (!InitializeWinsock()) return false;
     if (!CreateAndBindSocket(port)) {
@@ -132,17 +145,37 @@ class NtpServer::Impl {
 
     auto& clients = client_tracker_.GetAllMutable();
     for (auto& client : clients) {
-      sendto(sock_, reinterpret_cast<const char*>(buf.data()),
-             static_cast<int>(buf.size()), 0,
-             reinterpret_cast<sockaddr*>(&client.addr), sizeof(client.addr));
+      if (SendBuffer(client.addr, sizeof(client.addr), buf)) {
+        push_notifications_.fetch_add(1, std::memory_order_relaxed);
+      }
     }
+  }
+
+  ServerStats GetStats() const {
+    ServerStats stats;
+    stats.packets_received = packets_received_.load(std::memory_order_relaxed);
+    stats.packets_sent = packets_sent_.load(std::memory_order_relaxed);
+    stats.recv_errors = recv_errors_.load(std::memory_order_relaxed);
+    stats.drop_short_packets = short_packets_.load(std::memory_order_relaxed);
+    stats.send_errors = send_errors_.load(std::memory_order_relaxed);
+    stats.push_notifications =
+        push_notifications_.load(std::memory_order_relaxed);
+    stats.active_clients =
+        static_cast<uint64_t>(client_tracker_.GetAll().size());
+    {
+      std::lock_guard<std::mutex> lk(status_mtx_);
+      stats.last_error = last_error_;
+    }
+    return stats;
   }
 
  private:
   /** Initializes WinSock. */
   bool InitializeWinsock() {
     WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (err != 0) {
+      RecordError("WSAStartup failed", err);
       return false;
     }
     wsa_started_ = true;
@@ -161,6 +194,7 @@ class NtpServer::Impl {
   bool CreateAndBindSocket(uint16_t port) {
     sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock_ == INVALID_SOCKET) {
+      LogSocketError("socket");
       return false;
     }
 
@@ -170,6 +204,7 @@ class NtpServer::Impl {
     addr.sin_port = htons(port);
     if (bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
         SOCKET_ERROR) {
+      LogSocketError("bind");
       closesocket(sock_);
       sock_ = INVALID_SOCKET;
       return false;
@@ -197,6 +232,10 @@ class NtpServer::Impl {
     tv.tv_sec = static_cast<decltype(tv.tv_sec)>(timeout_us / 1000000);
     tv.tv_usec = static_cast<decltype(tv.tv_usec)>(timeout_us % 1000000);
     int ready = select(0, &rfds, nullptr, nullptr, &tv);
+    if (ready == SOCKET_ERROR) {
+      LogSocketError("select");
+      return false;
+    }
     return ready > 0;
   }
 
@@ -216,7 +255,7 @@ class NtpServer::Impl {
     std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix(), false);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
     RememberClient(cli, t_recv);
-    SendBuf(cli, clen, buf);
+    SendBuffer(cli, clen, buf);
   }
 
   /**
@@ -229,7 +268,18 @@ class NtpServer::Impl {
   bool ReceiveNtp(sockaddr_in* cli, int* clen, NtpPacket* req) {
     int n = recvfrom(sock_, reinterpret_cast<char*>(req), sizeof(*req), 0,
                      reinterpret_cast<sockaddr*>(cli), clen);
-    return n > 0;
+    if (n == sizeof(*req)) {
+      packets_received_.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    }
+    if (n == SOCKET_ERROR) {
+      recv_errors_.fetch_add(1, std::memory_order_relaxed);
+      LogSocketError("recvfrom");
+    } else if (n > 0) {
+      short_packets_.fetch_add(1, std::memory_order_relaxed);
+      RecordError("short packet", 0);
+    }
+    return false;
   }
 
   /**
@@ -297,11 +347,18 @@ class NtpServer::Impl {
   /**
    * @brief Send raw response buffer to client.
    */
-  void SendBuf(const sockaddr_in& cli, int clen,
-               const std::vector<uint8_t>& buf) {
-    sendto(sock_, reinterpret_cast<const char*>(buf.data()),
-           static_cast<int>(buf.size()), 0,
-           reinterpret_cast<const sockaddr*>(&cli), clen);
+  bool SendBuffer(const sockaddr_in& cli, int clen,
+                  const std::vector<uint8_t>& buf) {
+    int sent = sendto(sock_, reinterpret_cast<const char*>(buf.data()),
+                      static_cast<int>(buf.size()), 0,
+                      reinterpret_cast<const sockaddr*>(&cli), clen);
+    if (sent == static_cast<int>(buf.size())) {
+      packets_sent_.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    }
+    send_errors_.fetch_add(1, std::memory_order_relaxed);
+    LogSocketError("sendto");
+    return false;
   }
 
   void RememberClient(const sockaddr_in& cli, const TimeSpec& now) {
@@ -319,9 +376,42 @@ class NtpServer::Impl {
   int8_t precision_{-20};
   uint32_t ref_id_{Options::kDefaultRefId};
   uint32_t ctrl_seq_{0};
+  Options::LogCallback log_callback_;
+  std::atomic<uint64_t> packets_received_{0};
+  std::atomic<uint64_t> packets_sent_{0};
+  std::atomic<uint64_t> recv_errors_{0};
+  std::atomic<uint64_t> short_packets_{0};
+  std::atomic<uint64_t> send_errors_{0};
+  std::atomic<uint64_t> push_notifications_{0};
+  mutable std::mutex status_mtx_;
+  std::string last_error_;
 
   internal::ClientTracker client_tracker_;
+  void RecordError(const std::string& msg, int err_code);
+  void LogSocketError(const char* ctx);
 };
+
+void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
+  std::ostringstream oss;
+  if (err_code != 0) {
+    oss << msg << " (err=" << err_code << ")";
+  } else {
+    oss << msg;
+  }
+  const std::string text = oss.str();
+  if (log_callback_) {
+    log_callback_(text);
+  }
+  {
+    std::lock_guard<std::mutex> lk(status_mtx_);
+    last_error_ = text;
+  }
+}
+
+void NtpServer::Impl::LogSocketError(const char* ctx) {
+  int err = WSAGetLastError();
+  RecordError(std::string(ctx) + " failed", err);
+}
 
 NtpServer::NtpServer() : impl_(new Impl) {}
 NtpServer::~NtpServer() = default;
@@ -331,6 +421,7 @@ bool NtpServer::Start(uint16_t port, TimeSource* time_source,
   return impl_->Start(port, time_source, options);
 }
 void NtpServer::Stop() { impl_->Stop(); }
+ServerStats NtpServer::GetStats() const { return impl_->GetStats(); }
 void NtpServer::NotifyControlSnapshot() { impl_->NotifyControlSnapshot(); }
 
 }  // namespace ntpserver
