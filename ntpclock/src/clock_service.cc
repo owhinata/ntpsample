@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -293,11 +294,12 @@ struct ntpclock::ClockService::Impl {
    *
    * @param next_poll_time Poll deadline time point.
    * @param snapshot Options snapshot for HandlePushMessage.
+   * @param good_samples Pointer to good_samples counter (reset on Push).
    * @return true if Push was received, false if poll deadline reached.
    */
   bool WaitForPushOrPollDeadline(
       std::chrono::steady_clock::time_point next_poll_time,
-      const Options& snapshot);
+      const Options& snapshot, int* good_samples);
 
   /**
    * @brief Execute Exchange, process vendor hints, and build Status.
@@ -319,6 +321,7 @@ struct ntpclock::ClockService::Impl {
   void Loop();
   void ReportSocketError(const std::string& msg);
   std::string GetSocketError();
+  void ClearSocketError();
 };
 
 namespace {
@@ -593,7 +596,7 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
 
 bool ntpclock::ClockService::Impl::WaitForPushOrPollDeadline(
     std::chrono::steady_clock::time_point next_poll_time,
-    const Options& snapshot) {
+    const Options& snapshot, int* good_samples) {
   auto now = std::chrono::steady_clock::now();
 
   while (now < next_poll_time) {
@@ -606,7 +609,16 @@ bool ntpclock::ClockService::Impl::WaitForPushOrPollDeadline(
     internal::UdpSocket::Message msg;
     if (udp_socket.WaitMessage(wait_ms, &msg)) {
       if (msg.type == internal::UdpSocket::MessageType::Push) {
+        if (log_callback_) {
+          std::ostringstream oss;
+          oss << "[ClockService] Push notification received, resetting sync "
+                 "state (good_samples="
+              << *good_samples << "->0)";
+          log_callback_(oss.str());
+        }
         HandlePushMessage(msg, snapshot);
+        // Reset good_samples when Push is received (epoch change notification)
+        *good_samples = 0;
         return true;
       }
       // Ignore non-Push messages (unexpected Exchange responses)
@@ -628,6 +640,11 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
   std::string err;
   bool ok = UdpExchange(&sample_offset_s, &sample_rtt_ms, &response, &err);
 
+  // Clear socket error on successful exchange
+  if (ok) {
+    ClearSocketError();
+  }
+
   // Process vendor hint from response if available
   VendorHintResult hint_result;
   if (ok && response.size() > sizeof(ntpserver::NtpPacket)) {
@@ -639,10 +656,19 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
   double tnow = time_source ? time_source->NowUnix().ToDouble() : 0.0;
 
   if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
-    // Vendor hint applied: skip normal correction
+    // Vendor hint applied: reset sync state and skip normal correction
+    int old_samples = *good_samples;
+    *good_samples = 0;
     st_local =
         BuildVendorHintAppliedStatus(snapshot, sample_offset_s, sample_rtt_ms,
                                      tnow, *good_samples, hint_result);
+    if (log_callback_) {
+      std::ostringstream oss;
+      oss << "[ClockService] Epoch change detected in exchange, resetting sync "
+             "state (good_samples="
+          << old_samples << "->0)";
+      log_callback_(oss.str());
+    }
   } else if (ok && sample_rtt_ms <= snapshot.MaxRttMs()) {
     // Normal path: process sample and apply correction
     auto [median, omin, omax] =
@@ -686,7 +712,7 @@ void ntpclock::ClockService::Impl::Loop() {
 
     // 2. Wait for Push or poll deadline
     // If Push is received, returns immediately for instant Exchange execution
-    WaitForPushOrPollDeadline(next_poll_time, snapshot);
+    WaitForPushOrPollDeadline(next_poll_time, snapshot, &good_samples);
 
     // Update next poll deadline
     next_poll_time =
@@ -719,6 +745,11 @@ void ntpclock::ClockService::Impl::ReportSocketError(const std::string& msg) {
 std::string ntpclock::ClockService::Impl::GetSocketError() {
   std::lock_guard<std::mutex> lk(socket_err_mtx);
   return socket_last_error;
+}
+
+void ntpclock::ClockService::Impl::ClearSocketError() {
+  std::lock_guard<std::mutex> lk(socket_err_mtx);
+  socket_last_error.clear();
 }
 
 // ---------------- ClockService ----------------
