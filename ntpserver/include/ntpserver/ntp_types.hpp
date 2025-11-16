@@ -49,6 +49,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "ntpserver/time_spec.hpp"
@@ -169,6 +170,27 @@ inline bool IsEpochOlder(uint32_t e1, uint32_t e2) {
 inline bool IsEpochNewer(uint32_t e1, uint32_t e2) {
   int32_t diff = static_cast<int32_t>(e1 - e2);
   return diff > 0;
+}
+
+/**
+ * @brief Concatenate NTP packet and extension field bytes.
+ *
+ * Combines the basic 48-byte NTP packet with optional extension field(s)
+ * into a single contiguous buffer suitable for sendto().
+ *
+ * @param packet NTP packet structure (48 bytes).
+ * @param extension_field Extension field bytes (may be empty).
+ * @return Complete NTP message buffer ready for transmission.
+ */
+inline std::vector<uint8_t> ComposeNtpPacketWithEf(
+    const NtpPacket& packet, const std::vector<uint8_t>& extension_field) {
+  std::vector<uint8_t> buf(sizeof(packet) + extension_field.size());
+  std::memcpy(buf.data(), &packet, sizeof(packet));
+  if (!extension_field.empty()) {
+    std::memcpy(buf.data() + sizeof(packet), extension_field.data(),
+                extension_field.size());
+  }
+  return buf;
 }
 
 }  // namespace ntpserver

@@ -248,7 +248,7 @@ class NtpServer::Impl {
     BuildResponsePacket({}, stratum_, precision_, ref_id_, now, now, now, &resp,
                         5);
     std::vector<uint8_t> ef = MakeVendorEf(now, true);
-    std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
+    std::vector<uint8_t> buf = ComposeNtpPacketWithEf(resp, ef);
 
     // Prune inactive clients using monotonic time to tolerate absolute jumps.
     client_tracker_.PruneStale(std::chrono::steady_clock::now());
@@ -329,7 +329,7 @@ class NtpServer::Impl {
     TimeSpec t_recv{};
     NtpPacket resp = MakeResponse(req, ts, &t_recv);
     std::vector<uint8_t> ef = MakeVendorEf(ts->NowUnix(), false);
-    std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
+    std::vector<uint8_t> buf = ComposeNtpPacketWithEf(resp, ef);
     RememberClient(cli, t_recv);
     SendBuffer(cli, clen, buf);
   }
@@ -417,18 +417,6 @@ class NtpServer::Impl {
     ef.push_back(static_cast<uint8_t>(len & 0xFF));
     ef.insert(ef.end(), val.begin(), val.end());
     return ef;
-  }
-
-  /**
-   * @brief Concatenate response header and EF bytes.
-   */
-  std::vector<uint8_t> ComposeWithEf(const NtpPacket& resp,
-                                     const std::vector<uint8_t>& ef) {
-    std::vector<uint8_t> buf(sizeof(resp) + ef.size());
-    std::memcpy(buf.data(), &resp, sizeof(resp));
-    if (!ef.empty())
-      std::memcpy(buf.data() + sizeof(resp), ef.data(), ef.size());
-    return buf;
   }
 
   /**

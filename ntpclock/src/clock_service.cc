@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -244,12 +245,11 @@ struct ntpclock::ClockService::Impl {
    * backward jumps for SetAbsolute.
    *
    * @param rx Raw datagram bytes (NTP header + optional extension fields).
-   * @param step_threshold_s Threshold for applying absolute time changes.
    * @param allow_abort If true, sets exchange_abort flag when hints applied.
    * @return VendorHintResult indicating what was applied.
    */
   VendorHintResult ApplyVendorHints(const std::vector<uint8_t>& rx,
-                                    double step_threshold_s, bool allow_abort);
+                                    bool allow_abort);
 
   /**
    * @brief Update estimators and compute target offset from valid sample.
@@ -359,8 +359,8 @@ bool ntpclock::ClockService::Impl::UdpExchange(
   exchange_abort.store(false, std::memory_order_relaxed);
 
   // Get transmit timestamp (T1) and build request
-  ntpserver::TimeSpec T1 =
-      time_source ? time_source->NowUnix() : ntpserver::TimeSpec{};
+  assert(time_source != nullptr && "time_source must be set during Start()");
+  ntpserver::TimeSpec T1 = time_source->NowUnix();
   std::vector<uint8_t> req = BuildNtpRequest(T1);
 
   // Send request
@@ -462,19 +462,18 @@ bool ntpclock::ClockService::Impl::ProcessNtpResponse(
 ntpclock::ClockService::Impl::VendorHintResult
 ntpclock::ClockService::Impl::ApplyVendorHintFromRx(
     const std::vector<uint8_t>& rx, const Options& snapshot) {
-  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
-  return ApplyVendorHints(rx, step_threshold_s, false);
+  (void)snapshot;  // Reserved for future use
+  return ApplyVendorHints(rx, false);
 }
 
 void ntpclock::ClockService::Impl::HandlePushMessage(
     const internal::UdpSocket::Message& msg, const Options& snapshot) {
-  double step_threshold_s = snapshot.StepThresholdMs() / 1000.0;
-  ApplyVendorHints(msg.data, step_threshold_s, true);
+  (void)snapshot;  // Reserved for future use
+  ApplyVendorHints(msg.data, true);
 }
 
 ntpclock::ClockService::Impl::VendorHintResult
 ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
-                                               double step_threshold_s,
                                                bool allow_abort) {
   VendorHintResult hint_result;
 
@@ -482,8 +481,6 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
   if (!ts) return hint_result;
 
   // Process vendor hints with epoch detection
-  // Note: step_threshold_s not used as ProcessPacket handles epoch changes
-  (void)step_threshold_s;
   bool epoch_changed = false;
   auto result = vendor_hint_processor.ProcessWithEpochDetection(
       rx, sizeof(ntpserver::NtpPacket), ts, &epoch_changed);
@@ -653,7 +650,8 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
 
   // Build status based on sample validity and vendor hint state
   Status st_local;
-  double tnow = time_source ? time_source->NowUnix().ToDouble() : 0.0;
+  assert(time_source != nullptr && "time_source must be set during Start()");
+  double tnow = time_source->NowUnix().ToDouble();
 
   if (ok && sample_rtt_ms <= snapshot.MaxRttMs() && hint_result.applied) {
     // Vendor hint applied: reset sync state and skip normal correction
@@ -776,7 +774,8 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
 
   // Open UDP socket for persistent connection
   auto get_time = [time_source]() -> ntpserver::TimeSpec {
-    return time_source ? time_source->NowUnix() : ntpserver::TimeSpec{};
+    assert(time_source != nullptr && "time_source must be set during Start()");
+    return time_source->NowUnix();
   };
   auto log_fn = [impl = p_.get()](const std::string& msg) {
     if (impl) impl->ReportSocketError(msg);
