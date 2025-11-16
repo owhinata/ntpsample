@@ -76,32 +76,24 @@ inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
 
 class WinsockSession {
  public:
-  ~WinsockSession() { Stop(); }
+  WinsockSession() = default;
 
   bool Start() {
-    if (started_) return true;
     WSADATA wsa{};
     int err = WSAStartup(MAKEWORD(2, 2), &wsa);
     if (err != 0) {
       last_error_ = err;
       return false;
     }
-    started_ = true;
     last_error_ = 0;
     return true;
   }
 
-  void Stop() {
-    if (started_) {
-      WSACleanup();
-      started_ = false;
-    }
-  }
+  void Stop() { WSACleanup(); }
 
   int LastError() const { return last_error_; }
 
  private:
-  bool started_{false};
   int last_error_{0};
 };
 
@@ -168,24 +160,16 @@ class StatsTracker {
 class NtpServer::Impl {
  public:
   Impl() = default;
-  ~Impl() {
-    Stop();
-    if (winsock_initialized_) {
-      winsock_.Stop();
-    }
-  }
+  ~Impl() { Stop(); }
 
   bool Start(uint16_t port, TimeSource* time_source, const Options& options) {
     std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (running_.load()) return true;
 
-    // Winsock initialization (first time only)
-    if (!winsock_initialized_) {
-      if (!winsock_.Start()) {
-        RecordError("WSAStartup failed", winsock_.LastError());
-        return false;
-      }
-      winsock_initialized_ = true;
+    // Winsock initialization (reference counted)
+    if (!winsock_.Start()) {
+      RecordError("WSAStartup failed", winsock_.LastError());
+      return false;
     }
 
     // Increment epoch number
@@ -232,7 +216,8 @@ class NtpServer::Impl {
       closesocket(sock_);
       sock_ = INVALID_SOCKET;
     }
-    // Don't call winsock_.Stop() (cleanup in destructor)
+    // Winsock cleanup (reference counted)
+    winsock_.Stop();
   }
 
   void NotifyControlSnapshot() {
@@ -447,10 +432,9 @@ class NtpServer::Impl {
   int8_t precision_{-20};
   uint32_t ref_id_{Options::kDefaultRefId};
   uint32_t ctrl_seq_{0};
-  uint32_t epoch_{0};                // Epoch number (incremented on Start())
-  bool winsock_initialized_{false};  // Winsock initialized flag
-  TimeSpec epoch_abs_{};             // ABS value captured at epoch start
-  double epoch_rate_{1.0};           // RATE value captured at epoch start
+  uint32_t epoch_{0};       // Epoch number (incremented on Start())
+  TimeSpec epoch_abs_{};    // ABS value captured at epoch start
+  double epoch_rate_{1.0};  // RATE value captured at epoch start
   Options::LogCallback log_callback_;
   StatsTracker stats_;
   WinsockSession winsock_;
