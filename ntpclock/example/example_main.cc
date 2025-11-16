@@ -17,6 +17,7 @@
 #include <cstring>
 #include <ctime>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -26,6 +27,24 @@
 #include "ntpserver/qpc_clock.hpp"
 
 namespace {
+/**
+ * @brief Thread-safe logger for debug messages.
+ */
+class Logger {
+ public:
+  explicit Logger(bool enabled) : enabled_(enabled) {}
+
+  void Log(const std::string& msg) {
+    if (!enabled_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::fprintf(stderr, "%s\n", msg.c_str());
+  }
+
+ private:
+  bool enabled_;
+  std::mutex mutex_;
+};
+
 // On Windows consoles, enable ANSI escape processing for in-place refresh.
 #if defined(_WIN32)
 #include <windows.h>
@@ -98,7 +117,8 @@ void PrintUsage() {
                "  --min-samples n      (default 3)\n"
                "  --offset-window n    (default 5)\n"
                "  --skew-window n      (default 10)\n"
-               "  --utc                (default: JST)\n");
+               "  --utc                (default: JST)\n"
+               "  --debug              Enable debug logging\n");
 }
 }  // namespace
 
@@ -106,6 +126,7 @@ int main(int argc, char** argv) {
   std::string ip = "127.0.0.1";
   uint16_t port = 9123;
   bool opt_utc = false;  // default: JST
+  bool debug = false;
 
   auto builder = ntpclock::Options::Builder();
 
@@ -132,6 +153,8 @@ int main(int argc, char** argv) {
       builder.SkewWindow(std::atoi(argv[++i]));
     } else if (a == "--utc") {
       opt_utc = true;
+    } else if (a == "--debug") {
+      debug = true;
     } else if (a == "-h" || a == "--help") {
       PrintUsage();
       return 0;
@@ -141,6 +164,12 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
+
+  // Create logger
+  Logger logger(debug);
+  auto log_callback = [&logger](const std::string& msg) { logger.Log(msg); };
+
+  builder.LogSink(log_callback);
 
   ntpclock::ClockService svc;
   auto opt = builder.Build();

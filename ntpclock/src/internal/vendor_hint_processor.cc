@@ -2,10 +2,13 @@
 #include "internal/vendor_hint_processor.hpp"
 
 #include <cmath>
+#include <sstream>
 #include <vector>
 
 namespace ntpclock {
 namespace internal {
+
+void VendorHintProcessor::SetLogSink(LogCallback cb) { log_callback_ = cb; }
 
 bool VendorHintProcessor::ParseVendorPayload(
     const std::vector<uint8_t>& rx_data, size_t ntp_packet_size,
@@ -175,6 +178,14 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
   uint32_t old_epoch = current_epoch_;
   ntpserver::TimeSpec time_before = time_source->NowUnix();
 
+  if (log_callback_) {
+    std::ostringstream oss;
+    oss << "[DEBUG VendorHint] ProcessWithEpochDetection BEFORE:"
+        << " old_epoch=" << old_epoch << " packet_epoch=" << payload.seq
+        << " time_before=" << time_before.ToDouble();
+    log_callback_(oss.str());
+  }
+
   bool should_use = ProcessPacket(pkt, payload, time_source);
   bool epoch_changed = (current_epoch_ != old_epoch);
 
@@ -190,6 +201,16 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
     // Calculate actual step amount
     ntpserver::TimeSpec time_after = time_source->NowUnix();
     result.step_amount = time_after - time_before;
+
+    if (log_callback_) {
+      std::ostringstream oss;
+      oss << "[DEBUG VendorHint] ProcessWithEpochDetection AFTER: epoch "
+          << old_epoch << "->" << current_epoch_
+          << " time_before=" << time_before.ToDouble()
+          << " time_after=" << time_after.ToDouble()
+          << " step=" << result.step_amount.ToDouble();
+      log_callback_(oss.str());
+    }
   }
 
   // ProcessPacket returns false for old epochs and mode=5 packets
@@ -213,6 +234,7 @@ bool VendorHintProcessor::ProcessPacket(
 
   // New epoch - update
   if (ntpserver::IsEpochNewer(packet_epoch, current_epoch_)) {
+    uint32_t old_epoch = current_epoch_;
     current_epoch_ = packet_epoch;
 
     // Apply TimeSource update using server's current time
@@ -223,6 +245,14 @@ bool VendorHintProcessor::ProcessPacket(
       bool has_rate = (vendor.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U;
       if (has_rate) {
         time_source->SetAbsoluteAndRate(vendor.server_time, vendor.rate_scale);
+        if (log_callback_) {
+          std::ostringstream oss;
+          oss << "[DEBUG VendorHint] ProcessPacket: epoch " << old_epoch << "->"
+              << current_epoch_ << " ABS/RATE applied"
+              << " server_time=" << vendor.server_time.ToDouble()
+              << " rate=" << vendor.rate_scale;
+          log_callback_(oss.str());
+        }
       }
     }
 

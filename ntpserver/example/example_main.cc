@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -11,10 +13,29 @@
 #include "ntpserver/qpc_clock.hpp"
 
 namespace {
+/**
+ * @brief Thread-safe logger for debug messages.
+ */
+class Logger {
+ public:
+  explicit Logger(bool enabled) : enabled_(enabled) {}
+
+  void Log(const std::string& msg) {
+    if (!enabled_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::fprintf(stderr, "%s\n", msg.c_str());
+  }
+
+ private:
+  bool enabled_;
+  std::mutex mutex_;
+};
+
 void PrintUsage() {
   std::fprintf(
       stderr,
-      "Usage: ntpserver_example [--port N] [--rate R] [--abs SEC]\n"
+      "Usage: ntpserver_example [--port N] [--rate R] [--abs SEC] "
+      "[--debug]\n"
       "       Commands on stdin: help | now | rate R | abs SEC | add SEC | "
       "reset | quit\n");
 }
@@ -24,6 +45,7 @@ int main(int argc, char** argv) {
   uint16_t port = 9123;
   double init_rate = 1.0;
   double init_abs = 0.0;  // 0: do not set
+  bool debug = false;
 
   for (int i = 1; i < argc; ++i) {
     std::string a(argv[i]);
@@ -34,6 +56,8 @@ int main(int argc, char** argv) {
       init_rate = std::atof(argv[++i]);
     } else if (a == "--abs" && need(1)) {
       init_abs = std::atof(argv[++i]);
+    } else if (a == "--debug") {
+      debug = true;
     } else if (a == "-h" || a == "--help") {
       PrintUsage();
       return 0;
@@ -44,14 +68,18 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Create logger
+  Logger logger(debug);
+  auto log_callback = [&logger](const std::string& msg) { logger.Log(msg); };
+
   ntpserver::NtpServer server;
   auto& ts = ntpserver::QpcClock::Instance();
   ts.SetRate(init_rate);
   if (init_abs != 0.0)
     ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));
 
-  // Build options (used for Start/Stop cycles)
-  auto opts = ntpserver::Options::Builder().Build();
+  // Build options with logger (used for Start/Stop cycles)
+  auto opts = ntpserver::Options::Builder().LogSink(log_callback).Build();
 
   if (!server.Start(port, &ts, opts)) {
     std::fprintf(stderr, "failed to start ntp server\n");
@@ -95,8 +123,10 @@ int main(int argc, char** argv) {
       }
 
       double after = ts.NowUnix().ToDouble();
-      std::printf("Server restarted with rate=%.6f before=%.6f after=%.6f\n", r,
-                  before, after);
+      std::ostringstream oss;
+      oss << "Server restarted with rate=" << r << " before=" << before
+          << " after=" << after;
+      logger.Log(oss.str());
       continue;
     }
     if (std::strncmp(line, "abs ", 4) == 0) {
@@ -112,9 +142,10 @@ int main(int argc, char** argv) {
       }
 
       double after = ts.NowUnix().ToDouble();
-      std::printf(
-          "Server restarted with absolute=%.6f before=%.6f after=%.6f\n", t,
-          before, after);
+      std::ostringstream oss;
+      oss << "Server restarted with absolute=" << t << " before=" << before
+          << " after=" << after;
+      logger.Log(oss.str());
       continue;
     }
     if (std::strncmp(line, "add ", 4) == 0) {
@@ -131,10 +162,11 @@ int main(int argc, char** argv) {
       }
 
       double after = ts.NowUnix().ToDouble();
-      std::printf(
-          "Server restarted with offset %+f before=%.6f after=%.6f "
-          "delta=%.6f\n",
-          d, before, after, after - before);
+      std::ostringstream oss;
+      oss << "Server restarted with offset " << (d >= 0 ? "+" : "") << d
+          << " before=" << before << " after=" << after
+          << " delta=" << (after - before);
+      logger.Log(oss.str());
       continue;
     }
     if (std::strcmp(line, "reset") == 0) {
@@ -150,10 +182,10 @@ int main(int argc, char** argv) {
       }
 
       double after = ts.NowUnix().ToDouble();
-      std::printf(
-          "Server restarted (reset to real-time) before=%.6f (rate=%.6f) "
-          "after=%.6f (rate=1.0)\n",
-          before, rate_before, after);
+      std::ostringstream oss;
+      oss << "Server restarted (reset to real-time) before=" << before
+          << " (rate=" << rate_before << ") after=" << after << " (rate=1.0)";
+      logger.Log(oss.str());
       continue;
     }
     std::fprintf(stderr, "unknown command: %s\n", line);

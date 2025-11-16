@@ -44,7 +44,8 @@ ntpclock::Options::Builder::Builder()
       max_rtt_ms_(100),
       min_samples_to_lock_(3),
       offset_window_(5),
-      skew_window_(10) {}
+      skew_window_(10),
+      log_sink_cb_(Options::LogCallback()) {}
 
 ntpclock::Options::Builder::Builder(const Options& base)
     : poll_interval_ms_(base.PollIntervalMs()),
@@ -53,7 +54,8 @@ ntpclock::Options::Builder::Builder(const Options& base)
       max_rtt_ms_(base.MaxRttMs()),
       min_samples_to_lock_(base.MinSamplesToLock()),
       offset_window_(base.OffsetWindow()),
-      skew_window_(base.SkewWindow()) {}
+      skew_window_(base.SkewWindow()),
+      log_sink_cb_(base.LogSink()) {}
 
 ntpclock::Options::Builder& ntpclock::Options::Builder::PollIntervalMs(int v) {
   poll_interval_ms_ = std::max(1, v);
@@ -92,10 +94,16 @@ ntpclock::Options::Builder& ntpclock::Options::Builder::SkewWindow(int v) {
   return *this;
 }
 
+ntpclock::Options::Builder& ntpclock::Options::Builder::LogSink(
+    LogCallback cb) {
+  log_sink_cb_ = std::move(cb);
+  return *this;
+}
+
 ntpclock::Options ntpclock::Options::Builder::Build() const {
-  return ntpclock::Options(poll_interval_ms_, step_threshold_ms_,
-                           slew_rate_ms_per_s_, max_rtt_ms_,
-                           min_samples_to_lock_, offset_window_, skew_window_);
+  return ntpclock::Options(
+      poll_interval_ms_, step_threshold_ms_, slew_rate_ms_per_s_, max_rtt_ms_,
+      min_samples_to_lock_, offset_window_, skew_window_, log_sink_cb_);
 }
 
 namespace ntpclock {
@@ -154,6 +162,9 @@ struct ntpclock::ClockService::Impl {
   std::atomic<bool> exchange_abort{false};
   std::mutex socket_err_mtx;
   std::string socket_last_error;
+
+  // Logging
+  Options::LogCallback log_callback_;
 
   bool UdpExchange(double* out_offset_s, int* out_rtt_ms,
                    std::vector<uint8_t>* out_response, std::string* err);
@@ -727,6 +738,8 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
     std::lock_guard<std::mutex> lk(p_->opts_mtx);
     p_->opts = opt;
   }
+  p_->log_callback_ = opt.LogSink();
+  p_->vendor_hint_processor.SetLogSink(p_->log_callback_);
 
   // Open UDP socket for persistent connection
   auto get_time = [time_source]() -> ntpserver::TimeSpec {

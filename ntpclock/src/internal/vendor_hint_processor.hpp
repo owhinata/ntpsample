@@ -10,6 +10,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <string>
 #include <vector>
 
 #include "ntpserver/ntp_types.hpp"
@@ -28,6 +30,9 @@ namespace internal {
  */
 class VendorHintProcessor {
  public:
+  /** Callback for logging messages (thread-safe). */
+  using LogCallback = std::function<void(const std::string&)>;
+
   /**
    * @brief Result of processing a vendor hint.
    */
@@ -38,6 +43,12 @@ class VendorHintProcessor {
   };
 
   VendorHintProcessor() = default;
+
+  /**
+   * @brief Set log sink callback for debug logging.
+   * @param cb Callback function for logging messages.
+   */
+  void SetLogSink(LogCallback cb);
 
   /**
    * @brief Process and apply vendor hints from an NTP response.
@@ -134,6 +145,7 @@ class VendorHintProcessor {
   bool have_seq_ = false;  ///< Whether last_seq_ has been initialized
   uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
   uint32_t current_epoch_{0};  ///< Current epoch number tracked
+  LogCallback log_callback_;   ///< Optional log sink for debug messages
 
   /**
    * @brief Return true if seq is newer than last_seq_, accounting for wrap.

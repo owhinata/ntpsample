@@ -13,9 +13,11 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <ostream>
 #include <string>
+#include <utility>
 
 #include "ntpserver/time_source.hpp"
 #include "ntpserver/time_spec.hpp"
@@ -30,6 +32,9 @@ namespace ntpclock {
  */
 class Options {
  public:
+  /** Callback for logging messages (thread-safe). */
+  using LogCallback = std::function<void(const std::string&)>;
+
   /**
    * @brief Fluent builder for Options.
    */
@@ -52,6 +57,8 @@ class Options {
     Builder& OffsetWindow(int v);
     /** Number of samples for skew OLS window (default: 20). */
     Builder& SkewWindow(int v);
+    /** Set log sink callback (default: none). */
+    Builder& LogSink(LogCallback cb);
 
     Options Build() const;
 
@@ -63,6 +70,7 @@ class Options {
     int min_samples_to_lock_;
     int offset_window_;
     int skew_window_;
+    LogCallback log_sink_cb_;
   };
 
   /** @name Getters (immutable) */
@@ -74,6 +82,7 @@ class Options {
   int MinSamplesToLock() const { return min_samples_to_lock_; }
   int OffsetWindow() const { return offset_window_; }
   int SkewWindow() const { return skew_window_; }
+  const LogCallback& LogSink() const { return log_callback_; }
   ///@}
 
   /** Stream formatter for logging. */
@@ -82,14 +91,16 @@ class Options {
  private:
   // Private ctor for Builder
   Options(int poll_ms, int step_ms, double slew_ms_per_s, int max_rtt_ms,
-          int min_samples, int offset_window, int skew_window)
+          int min_samples, int offset_window, int skew_window,
+          LogCallback log_cb)
       : poll_interval_ms_(poll_ms),
         step_threshold_ms_(step_ms),
         slew_rate_ms_per_s_(slew_ms_per_s),
         max_rtt_ms_(max_rtt_ms),
         min_samples_to_lock_(min_samples),
         offset_window_(offset_window),
-        skew_window_(skew_window) {}
+        skew_window_(skew_window),
+        log_callback_(std::move(log_cb)) {}
 
   int poll_interval_ms_;
   int step_threshold_ms_;
@@ -98,6 +109,7 @@ class Options {
   int min_samples_to_lock_;
   int offset_window_;
   int skew_window_;
+  LogCallback log_callback_;
 };
 
 /**

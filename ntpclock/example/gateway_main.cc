@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -30,6 +31,24 @@
 #include "ntpserver/qpc_clock.hpp"
 
 namespace {
+
+/**
+ * @brief Thread-safe logger for debug messages.
+ */
+class Logger {
+ public:
+  explicit Logger(bool enabled) : enabled_(enabled) {}
+
+  void Log(const std::string& msg) {
+    if (!enabled_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::fprintf(stderr, "%s\n", msg.c_str());
+  }
+
+ private:
+  bool enabled_;
+  std::mutex mutex_;
+};
 
 std::atomic<bool> g_running{true};
 
@@ -46,7 +65,8 @@ void PrintUsage() {
       "  --poll ms            Polling interval in ms (default 10000)\n"
       "  --step ms            Step threshold in ms (default 200)\n"
       "  --slew ms_per_s      Slew rate in ms/s (default 5.0)\n"
-      "  --min-samples n      Min samples to lock (default 3)\n");
+      "  --min-samples n      Min samples to lock (default 3)\n"
+      "  --debug              Enable debug logging\n");
 }
 
 }  // namespace
@@ -55,6 +75,7 @@ int main(int argc, char** argv) {
   std::string upstream_ip = "127.0.0.1";
   uint16_t upstream_port = 9123;
   uint16_t serve_port = 9124;
+  bool debug = false;
 
   auto builder = ntpclock::Options::Builder();
 
@@ -76,6 +97,8 @@ int main(int argc, char** argv) {
       builder.SlewRateMsPerSec(std::atof(argv[++i]));
     } else if (a == "--min-samples" && need(1)) {
       builder.MinSamplesToLock(std::atoi(argv[++i]));
+    } else if (a == "--debug") {
+      debug = true;
     } else if (a == "--help" || a == "-h") {
       PrintUsage();
       return 0;
@@ -86,7 +109,16 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Create logger
+  Logger logger(debug);
+  auto log_callback = [&logger](const std::string& msg) { logger.Log(msg); };
+
+  builder.LogSink(log_callback);
   auto opts = builder.Build();
+
+  // Also use logger for NtpServer
+  auto server_opts =
+      ntpserver::Options::Builder().Stratum(2).LogSink(log_callback).Build();
 
   // Setup signal handler for graceful shutdown
   std::signal(SIGINT, SignalHandler);
@@ -111,8 +143,6 @@ int main(int argc, char** argv) {
 
   // Create NtpServer to serve downstream clients using the same QpcClock
   ntpserver::NtpServer server;
-  auto server_opts =
-      ntpserver::Options::Builder().Stratum(2).Build();  // stratum 2
   if (!server.Start(serve_port, &qpc_clock, server_opts)) {
     std::fprintf(stderr, "Failed to start NtpServer on port %u\n", serve_port);
     clock_service.Stop();
