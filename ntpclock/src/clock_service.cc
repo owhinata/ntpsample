@@ -541,6 +541,9 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
     st.window_count = 0;
     st.offset_applied_s = clock_corrector.GetOffsetApplied();
     st.offset_target_s = 0.0;
+    // Override offset_s with actual step amount (NTP offset is meaningless
+    // after TimeSource update)
+    st.offset_s = hint_result.step_amount.ToDouble();
   }
 
   // Set epoch changed flag

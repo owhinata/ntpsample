@@ -171,8 +171,10 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
     return result;
   }
 
-  // Track old epoch and call ProcessPacket for epoch detection
+  // Track old epoch and time before ProcessPacket for step calculation
   uint32_t old_epoch = current_epoch_;
+  ntpserver::TimeSpec time_before = time_source->NowUnix();
+
   bool should_use = ProcessPacket(pkt, payload, time_source);
   bool epoch_changed = (current_epoch_ != old_epoch);
 
@@ -185,8 +187,9 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
   if (epoch_changed) {
     result.reset_needed = true;
     result.abs_applied = true;
-    // Calculate step amount (approximation since we don't have old absolute)
-    result.step_amount = ntpserver::TimeSpec{};
+    // Calculate actual step amount
+    ntpserver::TimeSpec time_after = time_source->NowUnix();
+    result.step_amount = time_after - time_before;
   }
 
   // ProcessPacket returns false for old epochs and mode=5 packets
@@ -212,12 +215,14 @@ bool VendorHintProcessor::ProcessPacket(
   if (ntpserver::IsEpochNewer(packet_epoch, current_epoch_)) {
     current_epoch_ = packet_epoch;
 
-    // Apply TimeSource update if ABS and RATE are present
+    // Apply TimeSource update using server's current time
+    // Use server_time (current server time at response) to avoid staleness
+    // issue with abs_time (which is captured at epoch start and becomes
+    // stale over time)
     if (time_source) {
-      bool has_abs = (vendor.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U;
       bool has_rate = (vendor.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U;
-      if (has_abs && has_rate) {
-        time_source->SetAbsoluteAndRate(vendor.abs_time, vendor.rate_scale);
+      if (has_rate) {
+        time_source->SetAbsoluteAndRate(vendor.server_time, vendor.rate_scale);
       }
     }
 
