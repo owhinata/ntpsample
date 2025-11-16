@@ -15,12 +15,31 @@ file(GLOB NTPSERVER_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/*.hpp"
 )
 
+# Platform detection and platform-specific sources
+if(WIN32)
+    set(PLATFORM_DIR "win32")
+    set(PLATFORM_LIBS ws2_32)
+    set(PLATFORM_TIME_SOURCES src/qpc_clock.cc)
+elseif(UNIX AND NOT APPLE)
+    set(PLATFORM_DIR "posix")
+    set(PLATFORM_LIBS "")  # POSIX uses standard libc
+    set(PLATFORM_TIME_SOURCES src/platform/posix/monotonic_clock.cc)
+elseif(APPLE)
+    set(PLATFORM_DIR "posix")
+    set(PLATFORM_LIBS "")
+    set(PLATFORM_TIME_SOURCES src/platform/posix/monotonic_clock.cc)
+else()
+    message(FATAL_ERROR "Unsupported platform")
+endif()
+
 set(NTPSERVER_SOURCES
     src/ntp_server.cc
     src/ntp_server_options.cc
-    src/qpc_clock.cc
     src/ntp_types.cc
     src/time_spec.cc
+    src/platform/${PLATFORM_DIR}/socket_${PLATFORM_DIR}.cc
+    src/platform/${PLATFORM_DIR}/default_time_source.cc
+    ${PLATFORM_TIME_SOURCES}
 )
 
 if(NTP_SERVER_BUILD_SHARED)
@@ -38,13 +57,19 @@ target_include_directories(ntpserver
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# Compiler-specific flags
 if(MSVC)
     target_compile_options(ntpserver PRIVATE /W4 /permissive-)
     target_compile_definitions(ntpserver PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+    # GCC/Clang flags
+    target_compile_options(ntpserver PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Winsock2 on Windows
-target_link_libraries(ntpserver PRIVATE ws2_32)
+# Platform-specific libraries
+if(PLATFORM_LIBS)
+    target_link_libraries(ntpserver PRIVATE ${PLATFORM_LIBS})
+endif()
 
 # Optional example (off by default)
 if(NTP_SERVER_BUILD_EXAMPLE)
@@ -88,11 +113,13 @@ if(NTP_SERVER_BUILD_TESTS)
         tests/ntp_extension_test.cc
         tests/time_spec_test.cc
     )
-    target_link_libraries(ntpserver_tests PRIVATE ntpserver gtest gtest_main ws2_32)
+    target_link_libraries(ntpserver_tests PRIVATE ntpserver gtest gtest_main ${PLATFORM_LIBS})
     target_include_directories(ntpserver_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(MSVC)
         target_compile_definitions(ntpserver_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
         target_compile_options(ntpserver_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(ntpserver_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME ntpserver_tests COMMAND ntpserver_tests)
 endif()

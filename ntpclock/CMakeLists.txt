@@ -35,12 +35,23 @@ target_include_directories(ntpclock PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Platform detection (matches ntpserver)
+if(WIN32)
+  set(PLATFORM_LIBS ws2_32)
+else()
+  set(PLATFORM_LIBS "")
+endif()
+
+# Compiler-specific flags
 if(MSVC)
   target_compile_options(ntpclock PRIVATE /W4 /permissive-)
   target_compile_definitions(ntpclock PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+  target_compile_options(ntpclock PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(ntpclock PRIVATE ws2_32 ntpserver)
+# Link with ntpserver and platform-specific libraries
+target_link_libraries(ntpclock PRIVATE ntpserver ${PLATFORM_LIBS})
 
 # Formatting / Lint
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/ClangFormat.cmake)
@@ -86,6 +97,8 @@ if(NTP_CLOCK_BUILD_TESTS)
   if(MSVC)
     target_compile_options(ntpclock_tests PRIVATE /W4 /permissive-)
     target_compile_definitions(ntpclock_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  else()
+    target_compile_options(ntpclock_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME ntpclock_tests COMMAND ntpclock_tests)
 endif()

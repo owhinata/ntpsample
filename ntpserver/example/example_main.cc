@@ -10,7 +10,7 @@
 #include <thread>
 
 #include "ntpserver/ntp_server.hpp"
-#include "ntpserver/qpc_clock.hpp"
+#include "ntpserver/platform/default_time_source.hpp"
 
 namespace {
 /**
@@ -73,7 +73,7 @@ int main(int argc, char** argv) {
   auto log_callback = [&logger](const std::string& msg) { logger.Log(msg); };
 
   ntpserver::NtpServer server;
-  auto& ts = ntpserver::QpcClock::Instance();
+  auto& ts = ntpserver::platform::GetDefaultTimeSource();
   ts.SetRate(init_rate);
   if (init_abs != 0.0)
     ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));

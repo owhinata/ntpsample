@@ -9,7 +9,12 @@
  */
 #pragma once
 
+// Platform-specific includes for sockaddr_in
+#ifdef _WIN32
 #include <winsock2.h>
+#else
+#include <netinet/in.h>
+#endif
 
 #include <algorithm>
 #include <chrono>

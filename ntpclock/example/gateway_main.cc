@@ -29,7 +29,7 @@
 
 #include "ntpclock/clock_service.hpp"
 #include "ntpserver/ntp_server.hpp"
-#include "ntpserver/qpc_clock.hpp"
+#include "ntpserver/platform/default_time_source.hpp"
 
 namespace {
 
@@ -125,14 +125,15 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
 
-  // Create shared QpcClock for both ClockService and NtpServer
+  // Create shared TimeSource for both ClockService and NtpServer
   // This allows vendor hints (rate/abs) to propagate from upstream to
   // downstream
-  ntpserver::QpcClock& qpc_clock = ntpserver::QpcClock::Instance();
+  ntpserver::TimeSource& time_source =
+      ntpserver::platform::GetDefaultTimeSource();
 
   // Create ClockService to sync with upstream server
   ntpclock::ClockService clock_service;
-  if (!clock_service.Start(&qpc_clock, upstream_ip, upstream_port, opts)) {
+  if (!clock_service.Start(&time_source, upstream_ip, upstream_port, opts)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
@@ -142,9 +143,9 @@ int main(int argc, char** argv) {
   // Wait a bit for initial synchronization
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-  // Create NtpServer to serve downstream clients using the same QpcClock
+  // Create NtpServer to serve downstream clients using the same TimeSource
   ntpserver::NtpServer server;
-  if (!server.Start(serve_port, &qpc_clock, server_opts)) {
+  if (!server.Start(serve_port, &time_source, server_opts)) {
     std::fprintf(stderr, "Failed to start NtpServer on port %u\n", serve_port);
     clock_service.Stop();
     return 1;
@@ -167,8 +168,8 @@ int main(int argc, char** argv) {
       if (st.epoch != 0 && st.epoch != last_epoch) {
         last_epoch = st.epoch;
         server.Stop();
-        // qpc_clock is already updated by ClockService
-        if (!server.Start(serve_port, &qpc_clock, server_opts)) {
+        // time_source is already updated by ClockService
+        if (!server.Start(serve_port, &time_source, server_opts)) {
           std::fprintf(stderr, "\nFailed to restart NtpServer\n");
           clock_service.Stop();
           return 1;

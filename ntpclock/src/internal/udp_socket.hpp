@@ -9,17 +9,17 @@
  */
 #pragma once
 
-#include <winsock2.h>
-
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "ntpserver/platform/socket_interface.hpp"
 #include "ntpserver/time_spec.hpp"
 
 namespace ntpclock {
@@ -133,8 +133,8 @@ class UdpSocket {
    */
   MessageType ClassifyMessage(const std::vector<uint8_t>& data);
 
-  SOCKET sock_ = INVALID_SOCKET;  ///< Windows socket handle
-  sockaddr_in server_addr_{};     ///< Server address for send()
+  std::unique_ptr<ntpserver::platform::ISocket> socket_;
+  ntpserver::platform::Endpoint server_endpoint_;  ///< Server endpoint
   std::function<ntpserver::TimeSpec()> get_time_;  ///< Timestamp callback
   std::atomic<bool> running_{false};  ///< Receive thread control flag
   std::thread recv_thread_;           ///< Background receive thread
@@ -143,19 +143,7 @@ class UdpSocket {
   std::condition_variable queue_cv_;  ///< Notifies message availability
   std::queue<Message> msg_queue_;     ///< Received message queue
   LogCallback log_callback_;
-  class WinsockSession {
-   public:
-    ~WinsockSession() { Stop(); }
-    bool Start();
-    void Stop();
-    int LastError() const { return last_error_; }
-
-   private:
-    bool started_{false};
-    int last_error_{0};
-  } winsock_;
   void LogError(const std::string& text);
-  void LogSocketError(const char* ctx);
 };
 
 }  // namespace internal

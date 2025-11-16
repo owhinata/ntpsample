@@ -1,7 +1,18 @@
 // Copyright (c) 2025 <Your Name>
 #include <gtest/gtest.h>
+
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -9,28 +20,27 @@
 #include <cstdint>
 #include <thread>
 #include <vector>
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
 
 #include "ntpserver/ntp_server.hpp"
 #include "ntpserver/ntp_types.hpp"
+
+// Platform-specific socket types
+#ifdef _WIN32
+using socket_t = SOCKET;
+#define INVALID_SOCK INVALID_SOCKET
+#define CLOSE_SOCKET closesocket
+#define SOCKLEN_T int
+#else
+using socket_t = int;
+#define INVALID_SOCK (-1)
+#define CLOSE_SOCKET close
+#define SOCKLEN_T socklen_t
+#endif
 
 namespace ntpserver {
 
 namespace {
 
-uint64_t ToNtpTimestamp(double unix_seconds) {
-  double sec;
-  double frac =
-      std::modf(unix_seconds + static_cast<double>(kNtpUnixEpochDiff), &sec);
-  uint64_t s = static_cast<uint64_t>(sec);
-  uint64_t f = static_cast<uint64_t>(frac * static_cast<double>(1ULL << 32));
-  return (s << 32) | f;
-}
-
-uint32_t Hton32(uint32_t v) { return htonl(v); }
 uint64_t Hton64(uint64_t v) {
   uint32_t hi = htonl(static_cast<uint32_t>(v >> 32));
   uint32_t lo = htonl(static_cast<uint32_t>(v & 0xFFFFFFFFULL));
@@ -84,13 +94,20 @@ class FakeTimeSource : public TimeSource {
   std::atomic<uint32_t> value_nsec_;
 };
 
-class WinsockGuard {
+class SocketGuard {
  public:
-  WinsockGuard() { WSAStartup(MAKEWORD(2, 2), &wsa_); }
-  ~WinsockGuard() { WSACleanup(); }
+#ifdef _WIN32
+  SocketGuard() { WSAStartup(MAKEWORD(2, 2), &wsa_); }
+  ~SocketGuard() { WSACleanup(); }
+#else
+  SocketGuard() {}
+  ~SocketGuard() {}
+#endif
 
  private:
+#ifdef _WIN32
   WSADATA wsa_{};
+#endif
 };
 }  // namespace
 
@@ -110,7 +127,7 @@ class WinsockGuard {
  * - recv/tx timestamps match the fixed time source.
  */
 TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
-  WinsockGuard wsg;
+  SocketGuard wsg;
 
   FakeTimeSource ts(1700000000.25);  // fixed test time
   NtpServer server;
@@ -120,8 +137,8 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
   // Small delay to ensure server thread enters recv loop.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-  SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  ASSERT_NE(sock, INVALID_SOCKET);
+  socket_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  ASSERT_NE(sock, INVALID_SOCK);
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -144,11 +161,15 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
   timeval tv{};
   tv.tv_sec = 1;
   tv.tv_usec = 0;
+#ifdef _WIN32
   int ready = select(0, &rfds, nullptr, nullptr, &tv);
+#else
+  int ready = select(sock + 1, &rfds, nullptr, nullptr, &tv);
+#endif
   ASSERT_GT(ready, 0) << "timeout waiting for NTP response";
 
   sockaddr_in from{};
-  int fromlen = sizeof(from);
+  SOCKLEN_T fromlen = sizeof(from);
   // Read up to one MTU; server may append extension field
   std::vector<uint8_t> rx(1500);
   int n = recvfrom(sock, reinterpret_cast<char*>(rx.data()),
@@ -196,7 +217,7 @@ TEST(NtpServerTest, RespondsWithServerModeAndEchoesOrigTimestamp) {
     EXPECT_DOUBLE_EQ(v.rate_scale, 1.0);
   }
 
-  closesocket(sock);
+  CLOSE_SOCKET(sock);
   server.Stop();
 }
 

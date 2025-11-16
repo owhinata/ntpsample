@@ -1,6 +1,8 @@
 # NTP Sample
 
-A high-precision NTP server and client implementation for Windows, featuring vendor extensions for instant time synchronization and gateway capabilities.
+A cross-platform high-precision NTP server and client implementation featuring vendor extensions for instant time synchronization and gateway capabilities.
+
+**Supported Platforms**: Windows, Linux, macOS
 
 ## Features
 
@@ -29,12 +31,14 @@ ntpsample/
 ## Build Requirements
 
 - CMake 3.20 or higher
-- Visual Studio 2022 Build Tools (C++) or Visual Studio 2022
-- Windows SDK with Winsock2 support
+- C++17 compatible compiler
+  - **Windows**: Visual Studio 2022 or MinGW
+  - **Linux**: GCC 7+ or Clang 5+
+  - **macOS**: Xcode 10+ (Apple Clang)
 
 ## Build Instructions
 
-### Building with Visual Studio (x64)
+### Windows (Visual Studio)
 
 ```bash
 # Configure
@@ -44,31 +48,39 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
+### Linux / macOS
+
+```bash
+# Configure
+cmake -B build
+
+# Build
+cmake --build build -j
+
+# Run tests
+ctest --test-dir build --output-on-failure
+```
+
 ### Build Outputs
 
-Libraries:
-- `build/ntpserver/Release/ntpserver.lib` - NTP server library
-- `build/ntpclock/Release/ntpclock.lib` - NTP client library
+**Windows (Release configuration)**:
+- Libraries: `build/ntpserver/Release/ntpserver.lib`, `build/ntpclock/Release/ntpclock.lib`
+- Executables: `build/ntpserver/Release/ntpserver_example.exe`, etc.
 
-Executables:
-- `build/ntpserver/Release/ntpserver_example.exe` - Simple NTP server
-- `build/ntpclock/Release/ntpclock_example.exe` - NTP client example
-- `build/ntpclock/Release/ntpclock_gateway.exe` - NTP gateway
-
-Tests:
-- `build/ntpserver/Release/ntpserver_tests.exe`
-- `build/ntpclock/Release/ntpclock_tests.exe`
+**Linux / macOS**:
+- Libraries: `build/ntpserver/libntpserver.a`, `build/ntpclock/libntpclock.a`
+- Executables: `build/ntpserver/ntpserver_example`, `build/ntpclock/ntpclock_example`, `build/ntpclock/ntpclock_gateway`
 
 ### Running Tests
 
+**Windows**:
 ```bash
 ctest --test-dir build -C Release
 ```
 
-Or run test executables directly:
+**Linux / macOS**:
 ```bash
-./build/ntpserver/Release/ntpserver_tests.exe
-./build/ntpclock/Release/ntpclock_tests.exe
+ctest --test-dir build --output-on-failure
 ```
 
 ### Offline GoogleTest Dependency
@@ -84,15 +96,23 @@ When `NTP_GTEST_ARCHIVE` is set, the build uses that archive instead of cloning 
 
 ## Usage Examples
 
+> **Note**: On Windows, executables are in `build/<project>/Release/`. On Linux/macOS, they're in `build/<project>/`.
+
 ### 1. Simple NTP Server
 
 Start an NTP server on UDP port 9123:
 
+**Windows**:
 ```bash
 ./build/ntpserver/Release/ntpserver_example.exe --port 9123
 ```
 
-The server will use the system clock (`QueryPerformanceCounter`) as the time source by default.
+**Linux / macOS**:
+```bash
+./build/ntpserver/ntpserver_example --port 9123
+```
+
+The server uses the platform-appropriate high-resolution clock as the time source by default (`QueryPerformanceCounter` on Windows, `clock_gettime(CLOCK_MONOTONIC)` on POSIX).
 
 ### 2. NTP Client
 
@@ -141,6 +161,24 @@ add 31536000    # Add one year (31536000 seconds)
 The server will automatically restart (Stop/Start) and send Push notifications (mode=5) to all known clients. Connected clients detect the new epoch and synchronize immediately, without waiting for the next poll interval.
 
 ## Architecture
+
+### Platform Abstraction Layer
+
+The implementation provides cross-platform compatibility through several abstraction layers:
+
+1. **Socket Abstraction** (`ISocket` interface):
+   - Windows: Winsock2 (`socket_win32.cc`)
+   - POSIX (Linux/macOS): BSD sockets with `poll()` (`socket_posix.cc`)
+   - Platform-independent factory: `CreatePlatformSocket()`
+
+2. **Time Source Abstraction**:
+   - Windows: `QpcClock` using `QueryPerformanceCounter`
+   - POSIX: `MonotonicClock` using `clock_gettime(CLOCK_MONOTONIC)`
+   - Platform-independent access: `platform::GetDefaultTimeSource()`
+
+3. **Build System**:
+   - CMake automatically detects the platform and compiles the appropriate implementations
+   - Conditional compilation for platform-specific headers and system calls
 
 ### TimeSpec
 

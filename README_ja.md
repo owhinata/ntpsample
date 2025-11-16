@@ -1,6 +1,8 @@
 # NTP Sample
 
-ベンダー拡張による即時時刻同期とゲートウェイ機能を備えた、Windows向けの高精度NTPサーバー・クライアント実装です。
+ベンダー拡張による即時時刻同期とゲートウェイ機能を備えた、クロスプラットフォーム対応の高精度NTPサーバー・クライアント実装です。
+
+**対応プラットフォーム**: Windows、Linux、macOS
 
 ## 特徴
 
@@ -29,12 +31,14 @@ ntpsample/
 ## ビルド要件
 
 - CMake 3.20以上
-- Visual Studio 2022 Build Tools（C++）または Visual Studio 2022
-- Winsock2をサポートするWindows SDK
+- C++17対応コンパイラ
+  - **Windows**: Visual Studio 2022 または MinGW
+  - **Linux**: GCC 7+ または Clang 5+
+  - **macOS**: Xcode 10+ (Apple Clang)
 
 ## ビルド手順
 
-### Visual Studioでのビルド（x64）
+### Windows (Visual Studio)
 
 ```bash
 # 構成
@@ -44,31 +48,39 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
+### Linux / macOS
+
+```bash
+# 構成
+cmake -B build
+
+# ビルド
+cmake --build build -j
+
+# テスト実行
+ctest --test-dir build --output-on-failure
+```
+
 ### ビルド成果物
 
-ライブラリ:
-- `build/ntpserver/Release/ntpserver.lib` - NTPサーバーライブラリ
-- `build/ntpclock/Release/ntpclock.lib` - NTPクライアントライブラリ
+**Windows (Releaseビルド)**:
+- ライブラリ: `build/ntpserver/Release/ntpserver.lib`、`build/ntpclock/Release/ntpclock.lib`
+- 実行ファイル: `build/ntpserver/Release/ntpserver_example.exe` など
 
-実行ファイル:
-- `build/ntpserver/Release/ntpserver_example.exe` - シンプルなNTPサーバー
-- `build/ntpclock/Release/ntpclock_example.exe` - NTPクライアントサンプル
-- `build/ntpclock/Release/ntpclock_gateway.exe` - NTPゲートウェイ
-
-テスト:
-- `build/ntpserver/Release/ntpserver_tests.exe`
-- `build/ntpclock/Release/ntpclock_tests.exe`
+**Linux / macOS**:
+- ライブラリ: `build/ntpserver/libntpserver.a`、`build/ntpclock/libntpclock.a`
+- 実行ファイル: `build/ntpserver/ntpserver_example`、`build/ntpclock/ntpclock_example`、`build/ntpclock/ntpclock_gateway`
 
 ### テストの実行
 
+**Windows**:
 ```bash
 ctest --test-dir build -C Release
 ```
 
-またはテスト実行ファイルを直接実行:
+**Linux / macOS**:
 ```bash
-./build/ntpserver/Release/ntpserver_tests.exe
-./build/ntpclock/Release/ntpclock_tests.exe
+ctest --test-dir build --output-on-failure
 ```
 
 ### オフライン環境での GoogleTest 依存関係
@@ -84,15 +96,23 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
 
 ## 使用例
 
+> **注**: Windows では実行ファイルは `build/<project>/Release/` にあります。Linux/macOS では `build/<project>/` にあります。
+
 ### 1. シンプルなNTPサーバー
 
 UDPポート9123でNTPサーバーを起動:
 
+**Windows**:
 ```bash
 ./build/ntpserver/Release/ntpserver_example.exe --port 9123
 ```
 
-デフォルトでは、システムクロック（`QueryPerformanceCounter`）を時刻ソースとして使用します。
+**Linux / macOS**:
+```bash
+./build/ntpserver/ntpserver_example --port 9123
+```
+
+デフォルトでは、プラットフォームに応じた高解像度クロックを時刻ソースとして使用します（WindowsではQueryPerformanceCounter、POSIXではclock_gettime(CLOCK_MONOTONIC)）。
 
 ### 2. NTPクライアント
 
@@ -141,6 +161,24 @@ add 31536000    # 1年分（31536000秒）を追加
 サーバーは自動的に再起動（Stop/Start）し、既知のすべてのクライアントにPush通知（mode=5）を送信します。接続されているクライアントは新しいエポックを検出し、次のポーリングを待たずに即座に同期します。
 
 ## アーキテクチャ
+
+### プラットフォーム抽象化レイヤー
+
+クロスプラットフォーム互換性を実現するために、いくつかの抽象化レイヤーを提供しています：
+
+1. **ソケット抽象化** (`ISocket`インターフェース):
+   - Windows: Winsock2 (`socket_win32.cc`)
+   - POSIX (Linux/macOS): BSD socketsと`poll()` (`socket_posix.cc`)
+   - プラットフォーム非依存のファクトリ: `CreatePlatformSocket()`
+
+2. **時刻ソース抽象化**:
+   - Windows: `QpcClock` (`QueryPerformanceCounter`を使用)
+   - POSIX: `MonotonicClock` (`clock_gettime(CLOCK_MONOTONIC)`を使用)
+   - プラットフォーム非依存のアクセス: `platform::GetDefaultTimeSource()`
+
+3. **ビルドシステム**:
+   - CMakeが自動的にプラットフォームを検出し、適切な実装をコンパイル
+   - プラットフォーム固有のヘッダーとシステムコールの条件分岐
 
 ### TimeSpec
 

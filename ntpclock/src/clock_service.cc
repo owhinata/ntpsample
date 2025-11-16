@@ -11,8 +11,12 @@
 
 #include "ntpclock/clock_service.hpp"
 
+// Platform-specific includes for htonl/ntohl
+#ifdef _WIN32
 #include <winsock2.h>
-#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -34,7 +38,7 @@
 #include "internal/udp_socket.hpp"
 #include "internal/vendor_hint_processor.hpp"
 #include "ntpserver/ntp_types.hpp"
-#include "ntpserver/qpc_clock.hpp"
+#include "ntpserver/platform/default_time_source.hpp"
 
 using std::chrono::milliseconds;
 
@@ -757,9 +761,9 @@ ntpclock::ClockService::~ClockService() { Stop(); }
 bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
                                    const std::string& ip, uint16_t port,
                                    const Options& opt) {
-  // Use QpcClock::Instance() as default if time_source is nullptr
+  // Use platform default TimeSource if time_source is nullptr
   if (!time_source) {
-    time_source = &ntpserver::QpcClock::Instance();
+    time_source = &ntpserver::platform::GetDefaultTimeSource();
   }
 
   Stop();

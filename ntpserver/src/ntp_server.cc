@@ -1,23 +1,18 @@
 // Copyright (c) 2025 <Your Name>
 /**
  * @file ntp_server.cc
- * @brief Minimal NTPv4 server implementation for Windows (UDP/IPv4).
+ * @brief Minimal NTPv4 server implementation (cross-platform UDP/IPv4).
  */
 #include "ntpserver/ntp_server.hpp"
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -26,9 +21,9 @@
 
 #include "internal/client_tracker.hpp"
 #include "ntpserver/ntp_types.hpp"
-#include "ntpserver/qpc_clock.hpp"
-
-#pragma comment(lib, "Ws2_32.lib")
+#include "ntpserver/platform/default_time_source.hpp"
+#include "ntpserver/platform/socket_interface.hpp"
+#include "platform/common/socket_utils.hpp"
 
 namespace ntpserver {
 
@@ -74,37 +69,6 @@ inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
   out->recv_timestamp = Hton64(t_recv.ToNtpTimestamp());
   out->tx_timestamp = Hton64(t_tx.ToNtpTimestamp());
 }
-
-class WinsockSession {
- public:
-  WinsockSession() = default;
-
-  bool Start() {
-    if (started_) return true;
-    WSADATA wsa{};
-    int err = WSAStartup(MAKEWORD(2, 2), &wsa);
-    if (err != 0) {
-      last_error_ = err;
-      return false;
-    }
-    started_ = true;
-    last_error_ = 0;
-    return true;
-  }
-
-  void Stop() {
-    if (started_) {
-      WSACleanup();
-      started_ = false;
-    }
-  }
-
-  int LastError() const { return last_error_; }
-
- private:
-  bool started_{false};
-  int last_error_{0};
-};
 
 class StatsTracker {
  public:
@@ -175,12 +139,6 @@ class NtpServer::Impl {
     std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (running_.load()) return true;
 
-    // Winsock initialization (reference counted)
-    if (!winsock_.Start()) {
-      RecordError("WSAStartup failed", winsock_.LastError());
-      return false;
-    }
-
     // Increment epoch number
     epoch_++;
 
@@ -188,7 +146,8 @@ class NtpServer::Impl {
     time_source_ = time_source;
 
     // Capture ABS/RATE values for this epoch
-    TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
+    TimeSource* ts =
+        time_source_ ? time_source_ : &platform::GetDefaultTimeSource();
     epoch_abs_ = ts->NowUnix();
     epoch_rate_ = ts->GetRate();
 
@@ -226,21 +185,19 @@ class NtpServer::Impl {
     if (!running_.exchange(false)) return;
 
     if (thread_.joinable()) {
-      // Wake select by setting a short timeout and using closesocket after
-      // join.
+      // Wake WaitReadable by setting a short timeout before join
       thread_.join();
     }
-    if (sock_ != INVALID_SOCKET) {
-      closesocket(sock_);
-      sock_ = INVALID_SOCKET;
+    if (socket_) {
+      socket_->Close();
+      socket_.reset();
     }
-    // Winsock cleanup (reference counted)
-    winsock_.Stop();
   }
 
   void NotifyControlSnapshot() {
-    TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
-    if (sock_ == INVALID_SOCKET) return;
+    TimeSource* ts =
+        time_source_ ? time_source_ : &platform::GetDefaultTimeSource();
+    if (!socket_ || !socket_->IsValid()) return;
     const TimeSpec now = ts->NowUnix();
 
     // mode=5 (broadcast) for Push notifications
@@ -268,21 +225,17 @@ class NtpServer::Impl {
  private:
   /** Creates UDP socket and binds to given port. */
   bool CreateAndBindSocket(uint16_t port) {
-    sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock_ == INVALID_SOCKET) {
-      LogSocketError("socket");
+    socket_ = platform::CreatePlatformSocket();
+    if (!socket_->Initialize()) {
+      RecordError("Socket initialization failed: " + socket_->GetLastError(),
+                  0);
       return false;
     }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
-    if (bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
-        SOCKET_ERROR) {
-      LogSocketError("bind");
-      closesocket(sock_);
-      sock_ = INVALID_SOCKET;
+    if (!socket_->Bind(port)) {
+      RecordError("Socket bind failed: " + socket_->GetLastError(), 0);
+      socket_->Close();
+      socket_.reset();
       return false;
     }
     return true;
@@ -290,7 +243,8 @@ class NtpServer::Impl {
 
   /** Main loop: wait for datagrams and respond. */
   void Loop() {
-    TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
+    TimeSource* ts =
+        time_source_ ? time_source_ : &platform::GetDefaultTimeSource();
 
     while (running_.load()) {
       if (!WaitReadable(/*timeout_us=*/200000)) continue;
@@ -300,19 +254,8 @@ class NtpServer::Impl {
 
   /** Waits for readability with a microsecond timeout. */
   bool WaitReadable(int64_t timeout_us) {
-    if (sock_ == INVALID_SOCKET) return false;
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(sock_, &rfds);
-    timeval tv{};
-    tv.tv_sec = static_cast<decltype(tv.tv_sec)>(timeout_us / 1000000);
-    tv.tv_usec = static_cast<decltype(tv.tv_usec)>(timeout_us % 1000000);
-    int ready = select(0, &rfds, nullptr, nullptr, &tv);
-    if (ready == SOCKET_ERROR) {
-      LogSocketError("select");
-      return false;
-    }
-    return ready > 0;
+    if (!socket_ || !socket_->IsValid()) return false;
+    return socket_->WaitReadable(timeout_us);
   }
 
   /**
@@ -342,16 +285,28 @@ class NtpServer::Impl {
    * @return true if a datagram was received.
    */
   bool ReceiveNtp(sockaddr_in* cli, int* clen, NtpPacket* req) {
-    int n = recvfrom(sock_, reinterpret_cast<char*>(req), sizeof(*req), 0,
-                     reinterpret_cast<sockaddr*>(cli), clen);
-    if (n == sizeof(*req)) {
+    if (!socket_ || !socket_->IsValid()) {
+      stats_.IncRecvErrors();
+      RecordError("Socket not valid", 0);
+      return false;
+    }
+
+    platform::Endpoint from;
+    std::vector<uint8_t> data;
+    if (!socket_->Receive(&from, &data, sizeof(*req))) {
+      stats_.IncRecvErrors();
+      RecordError("Receive failed: " + socket_->GetLastError(), 0);
+      return false;
+    }
+
+    if (data.size() == sizeof(*req)) {
+      std::memcpy(req, data.data(), sizeof(*req));
+      // Convert Endpoint back to sockaddr_in for ClientTracker
+      platform::EndpointToSockaddr(from, cli);
+      *clen = sizeof(*cli);
       stats_.IncPacketsReceived();
       return true;
-    }
-    if (n == SOCKET_ERROR) {
-      stats_.IncRecvErrors();
-      LogSocketError("recvfrom");
-    } else if (n > 0) {
+    } else if (data.size() > 0) {
       stats_.IncShortPackets();
       RecordError("short packet", 0);
     }
@@ -424,16 +379,24 @@ class NtpServer::Impl {
    */
   bool SendBuffer(const sockaddr_in& cli, int clen,
                   const std::vector<uint8_t>& buf) {
-    int sent = sendto(sock_, reinterpret_cast<const char*>(buf.data()),
-                      static_cast<int>(buf.size()), 0,
-                      reinterpret_cast<const sockaddr*>(&cli), clen);
-    if (sent == static_cast<int>(buf.size())) {
-      stats_.IncPacketsSent();
-      return true;
+    (void)clen;  // Unused parameter
+    if (!socket_ || !socket_->IsValid()) {
+      stats_.IncSendErrors();
+      RecordError("Socket not valid", 0);
+      return false;
     }
-    stats_.IncSendErrors();
-    LogSocketError("sendto");
-    return false;
+
+    // Convert sockaddr_in to Endpoint
+    platform::Endpoint to = platform::SockaddrToEndpoint(cli);
+
+    if (!socket_->Send(to, buf)) {
+      stats_.IncSendErrors();
+      RecordError("Send failed: " + socket_->GetLastError(), 0);
+      return false;
+    }
+
+    stats_.IncPacketsSent();
+    return true;
   }
 
   void RememberClient(const sockaddr_in& cli, const TimeSpec& now) {
@@ -442,7 +405,7 @@ class NtpServer::Impl {
 
   std::thread thread_;
   std::atomic<bool> running_{false};
-  SOCKET sock_{INVALID_SOCKET};
+  std::unique_ptr<platform::ISocket> socket_;
   std::mutex start_stop_mtx_;
 
   TimeSource* time_source_{nullptr};
@@ -454,11 +417,9 @@ class NtpServer::Impl {
   double epoch_rate_{1.0};  // RATE value captured at epoch start
   Options::LogCallback log_callback_;
   StatsTracker stats_;
-  WinsockSession winsock_;
 
   internal::ClientTracker client_tracker_;
   void RecordError(const std::string& msg, int err_code);
-  void LogSocketError(const char* ctx);
 };
 
 void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
@@ -473,11 +434,6 @@ void NtpServer::Impl::RecordError(const std::string& msg, int err_code) {
     log_callback_(text);
   }
   stats_.SetLastError(text);
-}
-
-void NtpServer::Impl::LogSocketError(const char* ctx) {
-  int err = WSAGetLastError();
-  RecordError(std::string(ctx) + " failed", err);
 }
 
 NtpServer::NtpServer() : impl_(new Impl) {}

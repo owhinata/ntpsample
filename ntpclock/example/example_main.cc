@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -24,7 +25,7 @@
 #include <vector>
 
 #include "ntpclock/clock_service.hpp"
-#include "ntpserver/qpc_clock.hpp"
+#include "ntpserver/platform/default_time_source.hpp"
 
 namespace {
 /**
@@ -85,6 +86,13 @@ void ShowCur() {
   std::printf("\x1b[?25h");
   std::fflush(stdout);
 }
+
+void SignalHandler(int sig) {
+  (void)sig;
+  ShowCur();
+  std::exit(0);
+}
+
 void EnableVirtualTerminal() {}
 int TermWidth() { return 120; }
 #endif
@@ -179,6 +187,9 @@ int main(int argc, char** argv) {
   std::atexit(AtExitShowCur);
 #if defined(_WIN32)
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+#else
+  std::signal(SIGINT, SignalHandler);
+  std::signal(SIGTERM, SignalHandler);
 #endif
 
   if (!svc.Start(ip, port, opt)) {
