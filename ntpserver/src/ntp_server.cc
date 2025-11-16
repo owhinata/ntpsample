@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -182,6 +183,15 @@ class NtpServer::Impl {
     TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
     epoch_abs_ = ts->NowUnix();
     epoch_rate_ = ts->GetRate();
+
+    if (log_callback_) {
+      std::ostringstream oss;
+      oss << "[DEBUG Server] Start: epoch=" << epoch_
+          << " epoch_abs_=" << epoch_abs_.sec << "." << std::setw(9)
+          << std::setfill('0') << epoch_abs_.nsec
+          << " epoch_rate_=" << epoch_rate_;
+      log_callback_(oss.str());
+    }
 
     stratum_ = options.Stratum();
     precision_ = options.Precision();
@@ -375,6 +385,18 @@ class NtpServer::Impl {
     v.server_time = server_now;
     v.abs_time = epoch_abs_;     // Use ABS captured at epoch start
     v.rate_scale = epoch_rate_;  // Use RATE captured at epoch start
+
+    if (log_callback_) {
+      std::ostringstream oss;
+      oss << "[DEBUG Server] MakeVendorEf: epoch=" << epoch_
+          << " abs_time=" << v.abs_time.sec << "." << std::setw(9)
+          << std::setfill('0') << v.abs_time.nsec
+          << " server_time=" << v.server_time.sec << "." << std::setw(9)
+          << std::setfill('0') << v.server_time.nsec
+          << " rate=" << v.rate_scale;
+      log_callback_(oss.str());
+    }
+
     std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
 
     const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;

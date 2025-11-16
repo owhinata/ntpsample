@@ -2,6 +2,7 @@
 #include "internal/vendor_hint_processor.hpp"
 
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <vector>
 
@@ -182,7 +183,8 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
     std::ostringstream oss;
     oss << "[DEBUG VendorHint] ProcessWithEpochDetection BEFORE:"
         << " old_epoch=" << old_epoch << " packet_epoch=" << payload.seq
-        << " time_before=" << time_before.ToDouble();
+        << " time_before=" << time_before.sec << "." << std::setw(9)
+        << std::setfill('0') << time_before.nsec;
     log_callback_(oss.str());
   }
 
@@ -206,9 +208,12 @@ VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
       std::ostringstream oss;
       oss << "[DEBUG VendorHint] ProcessWithEpochDetection AFTER: epoch "
           << old_epoch << "->" << current_epoch_
-          << " time_before=" << time_before.ToDouble()
-          << " time_after=" << time_after.ToDouble()
-          << " step=" << result.step_amount.ToDouble();
+          << " time_before=" << time_before.sec << "." << std::setw(9)
+          << std::setfill('0') << time_before.nsec
+          << " time_after=" << time_after.sec << "." << std::setw(9)
+          << std::setfill('0') << time_after.nsec
+          << " step=" << result.step_amount.sec << "." << std::setw(9)
+          << std::setfill('0') << result.step_amount.nsec;
       log_callback_(oss.str());
     }
   }
@@ -249,7 +254,8 @@ bool VendorHintProcessor::ProcessPacket(
           std::ostringstream oss;
           oss << "[DEBUG VendorHint] ProcessPacket: epoch " << old_epoch << "->"
               << current_epoch_ << " ABS/RATE applied"
-              << " server_time=" << vendor.server_time.ToDouble()
+              << " server_time=" << vendor.server_time.sec << "."
+              << std::setw(9) << std::setfill('0') << vendor.server_time.nsec
               << " rate=" << vendor.rate_scale;
           log_callback_(oss.str());
         }
