@@ -138,7 +138,7 @@ In the server console, trigger a time change:
 add 31536000    # Add one year (31536000 seconds)
 ```
 
-Connected clients will receive a Push notification and synchronize immediately, without waiting for the next poll interval.
+The server will automatically restart (Stop/Start) and send Push notifications (mode=5) to all known clients. Connected clients detect the new epoch and synchronize immediately, without waiting for the next poll interval.
 
 ## Architecture
 
@@ -161,19 +161,22 @@ Core synchronization logic:
 
 ### NtpServer
 
-Lightweight NTPv4 server:
-1. **Client tracking**: Maintains list of recently seen client endpoints
-2. **Vendor extensions**: Includes absolute time and rate in responses
-3. **Push notifications**: Broadcasts control snapshots to all tracked clients when time source changes
-4. **TimeSource abstraction**: Can serve from any time source (system clock, synchronized clock, etc.)
+Lightweight NTPv4 server with epoch-based synchronization:
+1. **Epoch-based sync**: Each Start() creates a new epoch; clients automatically detect and synchronize
+2. **Client tracking**: Maintains list of recently seen client endpoints across restarts
+3. **Vendor extensions**: Includes absolute time and rate captured at epoch start
+4. **Automatic Push**: Sends Push notifications (mode=5) to known clients on Start()
+5. **TimeSource abstraction**: Can serve from any time source (system clock, synchronized clock, etc.)
+6. **Persistent statistics**: Server statistics accumulate across Stop/Start cycles
 
 ### Gateway Architecture
 
 The gateway combines ClockService and NtpServer:
 1. **ClockService** syncs with upstream server and maintains corrected time
 2. **TimeSource adapter** exposes ClockService time to NtpServer
-3. **Status monitoring** detects corrections and triggers Push notifications downstream
-4. **Push propagation** ensures multi-tier deployments synchronize instantly
+3. **Status monitoring** detects corrections and restarts NtpServer (Stop/Start)
+4. **Automatic Push** on server restart propagates changes to downstream clients
+5. **Epoch increment** ensures all downstream clients detect and synchronize with changes
 
 ## Configuration
 
@@ -224,7 +227,13 @@ auto server_opts =
         .Build();
 ntpserver::NtpServer server;
 server.Start(9123, &time_source, server_opts);
-server.NotifyControlSnapshot();  // Broadcast Push notification
+
+// To apply configuration changes (e.g., time source updates):
+// Stop and restart the server - Push notifications are sent automatically
+server.Stop();
+time_source.SetAbsolute(new_time);
+server.Start(9123, &time_source, server_opts);  // Sends Push to known clients
+
 server.Stop();
 ```
 

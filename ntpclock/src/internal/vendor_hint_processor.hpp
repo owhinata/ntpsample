@@ -57,6 +57,25 @@ class VendorHintProcessor {
                              ntpserver::TimeSource* time_source,
                              double step_threshold_s);
 
+  /**
+   * @brief Process packet based on epoch and mode.
+   *
+   * @param pkt NTP packet header.
+   * @param vendor Parsed vendor extension payload.
+   * @param time_source Target TimeSource to update on new epoch.
+   * @return true if packet should be used for NTP sync, false otherwise.
+   *
+   * Implements epoch-based synchronization:
+   * - Old epoch (< current_epoch_): ignore packet, return false
+   * - New epoch (> current_epoch_): update current_epoch_, apply ABS/RATE,
+   * return true
+   * - Same epoch, mode=5: ignore for NTP (Push notification), return false
+   * - Same epoch, mode=4: process normally, return true
+   */
+  bool ProcessPacket(const ntpserver::NtpPacket& pkt,
+                     const ntpserver::NtpVendorExt::Payload& vendor,
+                     ntpserver::TimeSource* time_source);
+
  private:
   /**
    * @brief Parse and validate vendor extension payload from raw packet.
@@ -97,6 +116,7 @@ class VendorHintProcessor {
 
   bool have_seq_ = false;  ///< Whether last_seq_ has been initialized
   uint32_t last_seq_ = 0;  ///< Last processed sequence number for deduplication
+  uint32_t current_epoch_{0};  ///< Current epoch number tracked
 
   /**
    * @brief Return true if seq is newer than last_seq_, accounting for wrap.

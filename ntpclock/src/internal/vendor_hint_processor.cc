@@ -146,5 +146,44 @@ bool VendorHintProcessor::IsSeqNewer(uint32_t seq) const {
   return diff > 0;
 }
 
+bool VendorHintProcessor::ProcessPacket(
+    const ntpserver::NtpPacket& pkt,
+    const ntpserver::NtpVendorExt::Payload& vendor,
+    ntpserver::TimeSource* time_source) {
+  uint8_t mode = pkt.li_vn_mode & 0x07;
+  uint32_t packet_epoch = vendor.seq;
+
+  // Old epoch - ignore
+  if (ntpserver::IsEpochOlder(packet_epoch, current_epoch_)) {
+    return false;
+  }
+
+  // New epoch - update
+  if (ntpserver::IsEpochNewer(packet_epoch, current_epoch_)) {
+    current_epoch_ = packet_epoch;
+
+    // Apply TimeSource update if ABS and RATE are present
+    if (time_source) {
+      bool has_abs = (vendor.flags & ntpserver::NtpVendorExt::kFlagAbs) != 0U;
+      bool has_rate = (vendor.flags & ntpserver::NtpVendorExt::kFlagRate) != 0U;
+      if (has_abs && has_rate) {
+        time_source->SetAbsoluteAndRate(vendor.abs_time, vendor.rate_scale);
+      }
+    }
+
+    // New epoch detected - caller should send new Exchange
+    return true;
+  }
+
+  // Same epoch
+  if (mode == 5) {
+    // Push notification - don't use for NTP sync
+    return false;
+  }
+
+  // mode=4, same epoch - process normally
+  return true;
+}
+
 }  // namespace internal
 }  // namespace ntpclock

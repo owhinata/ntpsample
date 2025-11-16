@@ -136,4 +136,39 @@ struct NtpVendorExt {
   static bool Parse(const std::vector<uint8_t>& bytes, Payload* out);
 };
 
+/**
+ * @brief RFC 1982 compliant epoch number comparison
+ *
+ * Epoch numbers are 32-bit unsigned integers that wrap around at 2^32.
+ * Serial number arithmetic is used to correctly handle wrap-around.
+ *
+ * Valid comparison range: epoch numbers must be within 2^31 of each other.
+ * In this implementation, epoch is incremented on each server restart,
+ * supporting approximately 2 billion restarts (effectively infinite).
+ *
+ * @see RFC 1982 - Serial Number Arithmetic
+ */
+
+/**
+ * @brief Determine if e1 < e2 using serial number arithmetic
+ * @param e1 First epoch number to compare
+ * @param e2 Second epoch number to compare
+ * @return true if e1 is older than e2
+ */
+inline bool IsEpochOlder(uint32_t e1, uint32_t e2) {
+  int32_t diff = static_cast<int32_t>(e1 - e2);
+  return diff < 0;
+}
+
+/**
+ * @brief Determine if e1 > e2 using serial number arithmetic
+ * @param e1 First epoch number to compare
+ * @param e2 Second epoch number to compare
+ * @return true if e1 is newer than e2
+ */
+inline bool IsEpochNewer(uint32_t e1, uint32_t e2) {
+  int32_t diff = static_cast<int32_t>(e1 - e2);
+  return diff > 0;
+}
+
 }  // namespace ntpserver

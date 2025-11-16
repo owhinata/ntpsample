@@ -50,7 +50,10 @@ int main(int argc, char** argv) {
   if (init_abs != 0.0)
     ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));
 
-  if (!server.Start(port, &ts)) {
+  // Build options (used for Start/Stop cycles)
+  auto opts = ntpserver::Options::Builder().Build();
+
+  if (!server.Start(port, &ts, opts)) {
     std::fprintf(stderr, "failed to start ntp server\n");
     return 1;
   }
@@ -82,43 +85,73 @@ int main(int argc, char** argv) {
     if (std::strncmp(line, "rate ", 5) == 0) {
       double r = std::atof(line + 5);
       double before = ts.NowUnix().ToDouble();
+
+      // Stop -> change -> Start
+      server.Stop();
       ts.SetRate(r);
-      server.NotifyControlSnapshot();
+      if (!server.Start(port, &ts, opts)) {
+        std::fprintf(stderr, "Failed to restart server\n");
+        return 1;
+      }
+
       double after = ts.NowUnix().ToDouble();
-      std::printf("rate set to %.6f (notify) before=%.6f after=%.6f\n", r,
+      std::printf("Server restarted with rate=%.6f before=%.6f after=%.6f\n", r,
                   before, after);
       continue;
     }
     if (std::strncmp(line, "abs ", 4) == 0) {
       double t = std::atof(line + 4);
       double before = ts.NowUnix().ToDouble();
+
+      // Stop -> change -> Start
+      server.Stop();
       ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(t));
-      server.NotifyControlSnapshot();
+      if (!server.Start(port, &ts, opts)) {
+        std::fprintf(stderr, "Failed to restart server\n");
+        return 1;
+      }
+
       double after = ts.NowUnix().ToDouble();
-      std::printf("absolute set to %.6f (notify) before=%.6f after=%.6f\n", t,
-                  before, after);
+      std::printf(
+          "Server restarted with absolute=%.6f before=%.6f after=%.6f\n", t,
+          before, after);
       continue;
     }
     if (std::strncmp(line, "add ", 4) == 0) {
       double d = std::atof(line + 4);
       double before = ts.NowUnix().ToDouble();
+
+      // Stop -> change -> Start
+      server.Stop();
       // Use absolute update to avoid cumulative rounding and ensure exact step.
       ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(before + d));
-      server.NotifyControlSnapshot();
+      if (!server.Start(port, &ts, opts)) {
+        std::fprintf(stderr, "Failed to restart server\n");
+        return 1;
+      }
+
       double after = ts.NowUnix().ToDouble();
       std::printf(
-          "offset adjusted by %+f (notify) before=%.6f after=%.6f delta=%.6f\n",
+          "Server restarted with offset %+f before=%.6f after=%.6f "
+          "delta=%.6f\n",
           d, before, after, after - before);
       continue;
     }
     if (std::strcmp(line, "reset") == 0) {
       double before = ts.NowUnix().ToDouble();
       double rate_before = ts.GetRate();
+
+      // Stop -> change -> Start
+      server.Stop();
       ts.ResetToRealTime();
-      server.NotifyControlSnapshot();
+      if (!server.Start(port, &ts, opts)) {
+        std::fprintf(stderr, "Failed to restart server\n");
+        return 1;
+      }
+
       double after = ts.NowUnix().ToDouble();
       std::printf(
-          "reset to real-time (notify) before=%.6f (rate=%.6f) "
+          "Server restarted (reset to real-time) before=%.6f (rate=%.6f) "
           "after=%.6f (rate=1.0)\n",
           before, rate_before, after);
       continue;

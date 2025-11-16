@@ -131,9 +131,16 @@ int main(int argc, char** argv) {
     // Detect ClockService updates and propagate to downstream clients
     if (st.last_update.ToDouble() > 0.0 && st.last_update != last_update) {
       last_update = st.last_update;
-      // Notify downstream clients when upstream changes occur
+      // Restart server when upstream changes occur
       if (st.last_correction != ntpclock::Status::Correction::None) {
-        server.NotifyControlSnapshot();
+        server.Stop();
+        // qpc_clock is already updated by ClockService
+        if (!server.Start(serve_port, &qpc_clock, server_opts)) {
+          std::fprintf(stderr, "\nFailed to restart NtpServer\n");
+          clock_service.Stop();
+          return 1;
+        }
+        std::printf("\n[NtpServer restarted due to upstream time change]\n");
       }
     }
 

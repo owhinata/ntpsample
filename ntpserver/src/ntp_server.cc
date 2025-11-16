@@ -57,9 +57,10 @@ inline uint64_t ToNtpTimestamp(double unix_seconds) {
 inline void BuildResponsePacket(const NtpPacket& req, uint8_t stratum,
                                 int8_t precision, uint32_t ref_id_host,
                                 const TimeSpec& t_ref, const TimeSpec& t_recv,
-                                const TimeSpec& t_tx, NtpPacket* out) {
+                                const TimeSpec& t_tx, NtpPacket* out,
+                                uint8_t mode = 4) {
   out->li_vn_mode =
-      static_cast<uint8_t>((0 << 6) | (4 << 3) | 4);  // LI=0,VN=4,Mode=4
+      static_cast<uint8_t>((0 << 6) | (4 << 3) | mode);  // LI=0,VN=4,Mode=mode
   out->stratum = stratum;
   out->poll = 4;
   out->precision = precision;
@@ -167,30 +168,52 @@ class StatsTracker {
 class NtpServer::Impl {
  public:
   Impl() = default;
-  ~Impl() { Stop(); }
+  ~Impl() {
+    Stop();
+    if (winsock_initialized_) {
+      winsock_.Stop();
+    }
+  }
 
   bool Start(uint16_t port, TimeSource* time_source, const Options& options) {
     std::lock_guard<std::mutex> lock(start_stop_mtx_);
     if (running_.load()) return true;
 
+    // Winsock initialization (first time only)
+    if (!winsock_initialized_) {
+      if (!winsock_.Start()) {
+        RecordError("WSAStartup failed", winsock_.LastError());
+        return false;
+      }
+      winsock_initialized_ = true;
+    }
+
+    // Increment epoch number
+    epoch_++;
+
     // Set time source (use QpcClock if nullptr)
     time_source_ = time_source;
+
+    // Capture ABS/RATE values for this epoch
+    TimeSource* ts = time_source_ ? time_source_ : &QpcClock::Instance();
+    epoch_abs_ = ts->NowUnix();
+    epoch_rate_ = ts->GetRate();
 
     stratum_ = options.Stratum();
     precision_ = options.Precision();
     ref_id_ = options.RefId();
     client_tracker_.SetRetention(options.ClientRetention());
     log_callback_ = options.LogSink();
-    stats_.Reset();
-
-    if (!winsock_.Start()) {
-      RecordError("WSAStartup failed", winsock_.LastError());
-      return false;
-    }
+    // Don't call stats_.Reset() to persist statistics across Start/Stop
     if (!CreateAndBindSocket(port)) {
-      winsock_.Stop();
       return false;
     }
+
+    // Push if ClientTracker not empty
+    if (!client_tracker_.GetAll().empty()) {
+      NotifyControlSnapshot();
+    }
+
     running_.store(true);
     thread_ = std::thread([this]() { Loop(); });
     return true;
@@ -209,7 +232,7 @@ class NtpServer::Impl {
       closesocket(sock_);
       sock_ = INVALID_SOCKET;
     }
-    winsock_.Stop();
+    // Don't call winsock_.Stop() (cleanup in destructor)
   }
 
   void NotifyControlSnapshot() {
@@ -217,11 +240,11 @@ class NtpServer::Impl {
     if (sock_ == INVALID_SOCKET) return;
     const TimeSpec now = ts->NowUnix();
 
-    // Minimal mode-4 response and EF using SRP helpers
+    // mode=5 (broadcast) for Push notifications
     NtpPacket resp{};
-    BuildResponsePacket({}, stratum_, precision_, ref_id_, now, now, now,
-                        &resp);
-    std::vector<uint8_t> ef = MakeVendorEf(ts, now, true);
+    BuildResponsePacket({}, stratum_, precision_, ref_id_, now, now, now, &resp,
+                        5);
+    std::vector<uint8_t> ef = MakeVendorEf(now, true);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
 
     // Prune inactive clients using monotonic time to tolerate absolute jumps.
@@ -302,7 +325,7 @@ class NtpServer::Impl {
 
     TimeSpec t_recv{};
     NtpPacket resp = MakeResponse(req, ts, &t_recv);
-    std::vector<uint8_t> ef = MakeVendorEf(ts, ts->NowUnix(), false);
+    std::vector<uint8_t> ef = MakeVendorEf(ts->NowUnix(), false);
     std::vector<uint8_t> buf = ComposeWithEf(resp, ef);
     RememberClient(cli, t_recv);
     SendBuffer(cli, clen, buf);
@@ -352,22 +375,21 @@ class NtpServer::Impl {
 
   /**
    * @brief Build vendor extension field (ABS+RATE) bytes.
-   * @param ts         Time source to query rate.
    * @param server_now Server absolute time to embed.
    * @param is_push    True for Push notifications, false for Exchange
    * responses.
    */
-  std::vector<uint8_t> MakeVendorEf(TimeSource* ts, const TimeSpec& server_now,
-                                    bool is_push) {
+  std::vector<uint8_t> MakeVendorEf(const TimeSpec& server_now, bool is_push) {
     NtpVendorExt::Payload v{};
-    v.seq = ++ctrl_seq_;
+    v.seq = epoch_;  // Use epoch number (not incrementing)
     v.flags = NtpVendorExt::kFlagAbs | NtpVendorExt::kFlagRate;
+    // Note: PUSH flag will be deprecated in favor of mode=5
     if (is_push) {
       v.flags |= NtpVendorExt::kFlagPush;
     }
     v.server_time = server_now;
-    v.abs_time = server_now;
-    v.rate_scale = ts->GetRate();
+    v.abs_time = epoch_abs_;     // Use ABS captured at epoch start
+    v.rate_scale = epoch_rate_;  // Use RATE captured at epoch start
     std::vector<uint8_t> val = NtpVendorExt::Serialize(v);
 
     const uint16_t typ = NtpVendorExt::kEfTypeVendorHint;
@@ -425,6 +447,10 @@ class NtpServer::Impl {
   int8_t precision_{-20};
   uint32_t ref_id_{Options::kDefaultRefId};
   uint32_t ctrl_seq_{0};
+  uint32_t epoch_{0};                // Epoch number (incremented on Start())
+  bool winsock_initialized_{false};  // Winsock initialized flag
+  TimeSpec epoch_abs_{};             // ABS value captured at epoch start
+  double epoch_rate_{1.0};           // RATE value captured at epoch start
   Options::LogCallback log_callback_;
   StatsTracker stats_;
   WinsockSession winsock_;
@@ -462,6 +488,5 @@ bool NtpServer::Start(uint16_t port, TimeSource* time_source,
 }
 void NtpServer::Stop() { impl_->Stop(); }
 ServerStats NtpServer::GetStats() const { return impl_->GetStats(); }
-void NtpServer::NotifyControlSnapshot() { impl_->NotifyControlSnapshot(); }
 
 }  // namespace ntpserver
