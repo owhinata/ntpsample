@@ -33,7 +33,9 @@ TimeSpec QpcClock::CurrentUnix() {
 double QpcClock::Elapsed() const {
   LARGE_INTEGER t{};
   QueryPerformanceCounter(&t);
-  return (static_cast<int64_t>(t.QuadPart) - qpc_t0_) / qpc_freq_;
+  return (static_cast<int64_t>(t.QuadPart) -
+          qpc_t0_.load(std::memory_order_relaxed)) /
+         qpc_freq_;
 }
 
 TimeSpec QpcClock::NowUnix() {
@@ -53,12 +55,13 @@ void QpcClock::SetRate(double new_rate) {
   int64_t qpc_now = static_cast<int64_t>(t.QuadPart);
 
   // Calculate current time (without calling Elapsed() to avoid second QPC call)
-  double elapsed = (qpc_now - qpc_t0_) / qpc_freq_;
+  double elapsed =
+      (qpc_now - qpc_t0_.load(std::memory_order_relaxed)) / qpc_freq_;
   TimeSpec elapsed_time = TimeSpec::FromDouble(elapsed);
   TimeSpec now = start_time_ + (elapsed_time * rate_);
 
   // Update anchor point
-  qpc_t0_ = qpc_now;
+  qpc_t0_.store(qpc_now, std::memory_order_relaxed);
   start_time_ = now;
   rate_ = new_rate;
 }
@@ -69,7 +72,7 @@ void QpcClock::SetAbsolute(const TimeSpec& time) {
   // Get current QPC once
   LARGE_INTEGER t{};
   QueryPerformanceCounter(&t);
-  qpc_t0_ = static_cast<int64_t>(t.QuadPart);
+  qpc_t0_.store(static_cast<int64_t>(t.QuadPart), std::memory_order_relaxed);
 
   // Update anchor point (rate unchanged)
   start_time_ = time;
@@ -81,7 +84,7 @@ void QpcClock::SetAbsoluteAndRate(const TimeSpec& time, double new_rate) {
   // Get current QPC once
   LARGE_INTEGER t{};
   QueryPerformanceCounter(&t);
-  qpc_t0_ = static_cast<int64_t>(t.QuadPart);
+  qpc_t0_.store(static_cast<int64_t>(t.QuadPart), std::memory_order_relaxed);
 
   // Update anchor point atomically
   start_time_ = time;
@@ -94,7 +97,7 @@ void QpcClock::ResetToRealTime() {
   // Get current QPC once
   LARGE_INTEGER t{};
   QueryPerformanceCounter(&t);
-  qpc_t0_ = static_cast<int64_t>(t.QuadPart);
+  qpc_t0_.store(static_cast<int64_t>(t.QuadPart), std::memory_order_relaxed);
 
   // Reset to current system time with rate 1.0
   start_time_ = CurrentUnix();

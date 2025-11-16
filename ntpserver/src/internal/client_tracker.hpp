@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <vector>
 
 #include "ntpserver/time_spec.hpp"
@@ -26,6 +27,8 @@ namespace internal {
  * Records client socket addresses from received requests and updates
  * last-seen timestamps. Supports pruning of stale entries and iteration
  * over active clients for broadcasting control snapshots.
+ *
+ * Thread-safe: All public methods are protected by an internal mutex.
  */
 class ClientTracker {
  public:
@@ -50,6 +53,7 @@ class ClientTracker {
    * @param now Current time.
    */
   void Remember(const sockaddr_in& addr, const TimeSpec& now) {
+    std::lock_guard<std::mutex> lock(mtx_);
     const auto now_mono = std::chrono::steady_clock::now();
     for (auto& c : clients_) {
       if (c.addr.sin_addr.s_addr == addr.sin_addr.s_addr &&
@@ -63,21 +67,13 @@ class ClientTracker {
   }
 
   /**
-   * @brief Get read-only access to all tracked clients.
-   * @return Const reference to the client list.
+   * @brief Get a snapshot of all tracked clients.
+   * @return Copy of the client list (thread-safe).
    */
-  const std::vector<Client>& GetAll() const { return clients_; }
-
-  /**
-   * @brief Get mutable access to client list for pruning.
-   *
-   * Allows caller to iterate and erase stale entries based on
-   * last_seen timestamps. Used by NotifyControlSnapshot to prune
-   * clients not seen within the retention window before broadcasting.
-   *
-   * @return Mutable reference to the client list.
-   */
-  std::vector<Client>& GetAllMutable() { return clients_; }
+  std::vector<Client> GetAll() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return clients_;
+  }
 
   /**
    * @brief Remove clients that have not been seen within max_age.
@@ -86,6 +82,7 @@ class ClientTracker {
    * pruning remains correct even if the time source jumps.
    */
   void PruneStale(std::chrono::steady_clock::time_point now_mono) {
+    std::lock_guard<std::mutex> lock(mtx_);
     auto effective = retention_;
     if (effective <= std::chrono::steady_clock::duration::zero()) {
       effective = std::chrono::minutes(60);
@@ -101,10 +98,12 @@ class ClientTracker {
    * @brief Configure retention duration for clients (default 60 minutes).
    */
   void SetRetention(std::chrono::steady_clock::duration retention) {
+    std::lock_guard<std::mutex> lock(mtx_);
     retention_ = retention;
   }
 
  private:
+  mutable std::mutex mtx_;
   std::vector<Client> clients_;
   std::chrono::steady_clock::duration retention_{std::chrono::minutes(60)};
 };

@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 
@@ -46,8 +47,9 @@ class QpcClock : public TimeSource {
 
   // We avoid Windows types in header to keep it portable.
   /** QPC value at anchor point (updated by
-   * SetAbsolute/SetRate/SetAbsoluteAndRate). */
-  int64_t qpc_t0_;
+   * SetAbsolute/SetRate/SetAbsoluteAndRate). Uses atomic for lock-free read in
+   * Elapsed(). */
+  std::atomic<int64_t> qpc_t0_;
   /** QPC frequency (counts per second). */
   double qpc_freq_;
   /** Time at anchor point (qpc_t0_). */

@@ -80,21 +80,29 @@ class WinsockSession {
   WinsockSession() = default;
 
   bool Start() {
+    if (started_) return true;
     WSADATA wsa{};
     int err = WSAStartup(MAKEWORD(2, 2), &wsa);
     if (err != 0) {
       last_error_ = err;
       return false;
     }
+    started_ = true;
     last_error_ = 0;
     return true;
   }
 
-  void Stop() { WSACleanup(); }
+  void Stop() {
+    if (started_) {
+      WSACleanup();
+      started_ = false;
+    }
+  }
 
   int LastError() const { return last_error_; }
 
  private:
+  bool started_{false};
   int last_error_{0};
 };
 
@@ -245,8 +253,8 @@ class NtpServer::Impl {
     // Prune inactive clients using monotonic time to tolerate absolute jumps.
     client_tracker_.PruneStale(std::chrono::steady_clock::now());
 
-    auto& clients = client_tracker_.GetAllMutable();
-    for (auto& client : clients) {
+    auto clients = client_tracker_.GetAll();
+    for (const auto& client : clients) {
       if (SendBuffer(client.addr, sizeof(client.addr), buf)) {
         stats_.IncPushNotifications();
       }
