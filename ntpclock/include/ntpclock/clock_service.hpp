@@ -116,6 +116,7 @@ struct Status {
   int samples = 0;
   Correction last_correction = Correction::None;
   double last_correction_amount_s = 0.0;
+  bool epoch_changed = false;  // True when upstream server epoch changed
   std::string last_error;
 
   // Debug summary of estimator windows

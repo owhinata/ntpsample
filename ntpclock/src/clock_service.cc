@@ -198,6 +198,7 @@ struct ntpclock::ClockService::Impl {
   struct VendorHintResult {
     bool applied = false;             ///< Whether any hint was applied
     bool abs_applied = false;         ///< Whether SetAbsolute was applied
+    bool epoch_changed = false;       ///< Whether server epoch changed
     ntpserver::TimeSpec step_amount;  ///< Step amount (if abs_applied)
   };
 
@@ -273,7 +274,8 @@ struct ntpclock::ClockService::Impl {
                             int sample_rtt_ms, double tnow, int good_samples,
                             double median, double omin, double omax,
                             Status::Correction correction,
-                            double correction_amount);
+                            double correction_amount,
+                            const VendorHintResult& hint_result);
 
   /**
    * @brief Wait for Push message or poll deadline.
@@ -465,9 +467,14 @@ ntpclock::ClockService::Impl::ApplyVendorHints(const std::vector<uint8_t>& rx,
   auto ts = time_source;
   if (!ts) return hint_result;
 
-  // Process vendor hints
-  auto result = vendor_hint_processor.ProcessAndApply(
-      rx, sizeof(ntpserver::NtpPacket), ts, step_threshold_s);
+  // Process vendor hints with epoch detection
+  // Note: step_threshold_s not used as ProcessPacket handles epoch changes
+  (void)step_threshold_s;
+  bool epoch_changed = false;
+  auto result = vendor_hint_processor.ProcessWithEpochDetection(
+      rx, sizeof(ntpserver::NtpPacket), ts, &epoch_changed);
+
+  hint_result.epoch_changed = epoch_changed;
 
   // If reset is needed, clear estimator state
   if (result.reset_needed) {
@@ -536,13 +543,17 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
     st.offset_target_s = 0.0;
   }
 
+  // Set epoch changed flag
+  st.epoch_changed = hint_result.epoch_changed;
+
   return st;
 }
 
 ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
     const Options& snapshot, double sample_offset_s, int sample_rtt_ms,
     double tnow, int good_samples, double median, double omin, double omax,
-    Status::Correction correction, double correction_amount) {
+    Status::Correction correction, double correction_amount,
+    const VendorHintResult& hint_result) {
   Status st;
   SetBaseStatusFields(&st, snapshot, sample_offset_s, sample_rtt_ms, tnow,
                       good_samples);
@@ -559,6 +570,7 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
   st.offset_target_s = median;
   st.last_correction = correction;
   st.last_correction_amount_s = correction_amount;
+  st.epoch_changed = hint_result.epoch_changed;
 
   return st;
 }
@@ -629,7 +641,7 @@ ntpclock::Status ntpclock::ClockService::Impl::ProcessExchangeAndBuildStatus(
     (*good_samples)++;
     st_local = BuildSuccessStatus(snapshot, sample_offset_s, sample_rtt_ms,
                                   tnow, *good_samples, median, omin, omax,
-                                  correction, correction_amount);
+                                  correction, correction_amount, hint_result);
   } else {
     // Error path: sample acquisition failed or RTT exceeded threshold
     st_local.synchronized = (*good_samples >= snapshot.MinSamplesToLock());

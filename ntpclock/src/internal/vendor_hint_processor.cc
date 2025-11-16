@@ -146,6 +146,56 @@ bool VendorHintProcessor::IsSeqNewer(uint32_t seq) const {
   return diff > 0;
 }
 
+VendorHintProcessor::HintResult VendorHintProcessor::ProcessWithEpochDetection(
+    const std::vector<uint8_t>& rx_data, size_t ntp_packet_size,
+    ntpserver::TimeSource* time_source, bool* out_epoch_changed) {
+  HintResult result;
+  if (out_epoch_changed) {
+    *out_epoch_changed = false;
+  }
+
+  // Parse NTP packet header
+  if (rx_data.size() < ntp_packet_size) {
+    return result;
+  }
+  ntpserver::NtpPacket pkt{};
+  std::memcpy(&pkt, rx_data.data(), sizeof(pkt));
+
+  // Parse vendor extension payload
+  ntpserver::NtpVendorExt::Payload payload{};
+  if (!ParseVendorPayload(rx_data, ntp_packet_size, &payload)) {
+    return result;
+  }
+
+  if (time_source == nullptr) {
+    return result;
+  }
+
+  // Track old epoch and call ProcessPacket for epoch detection
+  uint32_t old_epoch = current_epoch_;
+  bool should_use = ProcessPacket(pkt, payload, time_source);
+  bool epoch_changed = (current_epoch_ != old_epoch);
+
+  if (out_epoch_changed) {
+    *out_epoch_changed = epoch_changed;
+  }
+
+  // If epoch changed, ProcessPacket already applied ABS/RATE via
+  // SetAbsoluteAndRate, so we need to mark reset_needed and abs_applied
+  if (epoch_changed) {
+    result.reset_needed = true;
+    result.abs_applied = true;
+    // Calculate step amount (approximation since we don't have old absolute)
+    result.step_amount = ntpserver::TimeSpec{};
+  }
+
+  // ProcessPacket returns false for old epochs and mode=5 packets
+  // We still return the result for consistency
+  (void)should_use;
+
+  return result;
+}
+
 bool VendorHintProcessor::ProcessPacket(
     const ntpserver::NtpPacket& pkt,
     const ntpserver::NtpVendorExt::Payload& vendor,

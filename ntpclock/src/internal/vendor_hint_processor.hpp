@@ -76,6 +76,23 @@ class VendorHintProcessor {
                      const ntpserver::NtpVendorExt::Payload& vendor,
                      ntpserver::TimeSource* time_source);
 
+  /**
+   * @brief Process packet with epoch detection from raw data.
+   *
+   * @param rx_data Raw NTP packet bytes (header + optional extensions).
+   * @param ntp_packet_size Size of the basic NTP packet structure.
+   * @param time_source Target TimeSource to update on new epoch.
+   * @param out_epoch_changed Output parameter set to true if epoch changed.
+   * @return HintResult indicating what was applied and whether reset is needed.
+   *
+   * Combines epoch detection with hint processing. Parses NTP packet and
+   * vendor extension, detects epoch changes, and updates TimeSource.
+   */
+  HintResult ProcessWithEpochDetection(const std::vector<uint8_t>& rx_data,
+                                       size_t ntp_packet_size,
+                                       ntpserver::TimeSource* time_source,
+                                       bool* out_epoch_changed);
+
  private:
   /**
    * @brief Parse and validate vendor extension payload from raw packet.
