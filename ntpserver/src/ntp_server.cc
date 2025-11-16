@@ -449,7 +449,6 @@ class NtpServer::Impl {
   uint8_t stratum_{1};
   int8_t precision_{-20};
   uint32_t ref_id_{Options::kDefaultRefId};
-  uint32_t ctrl_seq_{0};
   uint32_t epoch_{0};       // Epoch number (incremented on Start())
   TimeSpec epoch_abs_{};    // ABS value captured at epoch start
   double epoch_rate_{1.0};  // RATE value captured at epoch start
