@@ -3,16 +3,17 @@
  * @file socket_win32.cc
  * @brief Windows Winsock2 implementation of ISocket interface
  */
-#include "ntpserver/platform/socket_interface.hpp"
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+#include "ntpserver/platform/socket_interface.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -113,8 +114,9 @@ class SocketWin32 : public ISocket {
     FD_SET(sock_, &rfds);
 
     timeval tv{};
-    tv.tv_sec = static_cast<long>(timeout_us / 1000000);
-    tv.tv_usec = static_cast<long>(timeout_us % 1000000);
+    tv.tv_sec = static_cast<long>(timeout_us / 1000000);  // NOLINT(runtime/int)
+    tv.tv_usec =
+        static_cast<long>(timeout_us % 1000000);  // NOLINT(runtime/int)
 
     // Windows: first parameter to select() is ignored
     int ready = select(0, &rfds, nullptr, nullptr, &tv);
@@ -194,8 +196,7 @@ class SocketWin32 : public ISocket {
 
     if (sent != static_cast<int>(data.size())) {
       std::ostringstream oss;
-      oss << "Partial send: sent " << sent << " of " << data.size()
-          << " bytes";
+      oss << "Partial send: sent " << sent << " of " << data.size() << " bytes";
       last_error_ = oss.str();
       return false;
     }

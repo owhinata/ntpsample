@@ -75,7 +75,7 @@ ctest --test-dir build --output-on-failure
 
 **Windows**:
 ```bash
-ctest --test-dir build -C Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 **Linux / macOS**:
