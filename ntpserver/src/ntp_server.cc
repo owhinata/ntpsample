@@ -36,16 +36,6 @@ inline uint64_t Hton64(uint64_t v) {
   return (static_cast<uint64_t>(lo) << 32) | hi;
 }
 
-/** Converts UNIX seconds to 64-bit NTP timestamp (seconds.fraction). */
-inline uint64_t ToNtpTimestamp(double unix_seconds) {
-  double sec;
-  double frac =
-      std::modf(unix_seconds + static_cast<double>(kNtpUnixEpochDiff), &sec);
-  uint64_t s = static_cast<uint64_t>(sec);
-  uint64_t f = static_cast<uint64_t>(frac * static_cast<double>(1ULL << 32));
-  return (s << 32) | f;
-}
-
 /**
  * Fills an NTP response packet from request and times.
  * Responsibility: formatting header fields and timestamps only.

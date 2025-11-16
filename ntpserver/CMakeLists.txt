@@ -113,7 +113,7 @@ if(NTP_SERVER_BUILD_TESTS)
         tests/ntp_extension_test.cc
         tests/time_spec_test.cc
     )
-    target_link_libraries(ntpserver_tests PRIVATE ntpserver gtest gtest_main ${PLATFORM_LIBS})
+    target_link_libraries(ntpserver_tests PRIVATE ntpserver gtest_main)
     target_include_directories(ntpserver_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(MSVC)
         target_compile_definitions(ntpserver_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
