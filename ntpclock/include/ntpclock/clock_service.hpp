@@ -129,6 +129,7 @@ struct Status {
   Correction last_correction = Correction::None;
   double last_correction_amount_s = 0.0;
   bool epoch_changed = false;  // True when upstream server epoch changed
+  uint32_t epoch = 0;          // Current epoch number from upstream server
   std::string last_error;
 
   // Debug summary of estimator windows

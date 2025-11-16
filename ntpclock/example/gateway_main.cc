@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -153,6 +154,7 @@ int main(int argc, char** argv) {
 
   // Main status display loop with change detection
   ntpserver::TimeSpec last_update{};
+  uint32_t last_epoch = 0;
   while (g_running.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -162,7 +164,8 @@ int main(int argc, char** argv) {
     if (st.last_update.ToDouble() > 0.0 && st.last_update != last_update) {
       last_update = st.last_update;
       // Restart server when upstream server epoch changes
-      if (st.epoch_changed) {
+      if (st.epoch != 0 && st.epoch != last_epoch) {
+        last_epoch = st.epoch;
         server.Stop();
         // qpc_clock is already updated by ClockService
         if (!server.Start(serve_port, &qpc_clock, server_opts)) {
@@ -170,7 +173,10 @@ int main(int argc, char** argv) {
           clock_service.Stop();
           return 1;
         }
-        std::printf("\n[NtpServer restarted due to upstream epoch change]\n");
+        std::ostringstream oss;
+        oss << "[Gateway] NtpServer restarted due to upstream epoch change: "
+            << st.epoch;
+        logger.Log(oss.str());
       }
     }
 

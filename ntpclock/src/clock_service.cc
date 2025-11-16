@@ -557,8 +557,9 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildVendorHintAppliedStatus(
     st.offset_s = hint_result.step_amount.ToDouble();
   }
 
-  // Set epoch changed flag
+  // Set epoch changed flag and current epoch number
   st.epoch_changed = hint_result.epoch_changed;
+  st.epoch = vendor_hint_processor.GetCurrentEpoch();
 
   return st;
 }
@@ -585,6 +586,7 @@ ntpclock::Status ntpclock::ClockService::Impl::BuildSuccessStatus(
   st.last_correction = correction;
   st.last_correction_amount_s = correction_amount;
   st.epoch_changed = hint_result.epoch_changed;
+  st.epoch = vendor_hint_processor.GetCurrentEpoch();
 
   return st;
 }

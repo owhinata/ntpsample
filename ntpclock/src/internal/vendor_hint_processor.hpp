@@ -104,6 +104,12 @@ class VendorHintProcessor {
                                        ntpserver::TimeSource* time_source,
                                        bool* out_epoch_changed);
 
+  /**
+   * @brief Get current epoch number.
+   * @return Current epoch number being tracked.
+   */
+  uint32_t GetCurrentEpoch() const { return current_epoch_; }
+
  private:
   /**
    * @brief Parse and validate vendor extension payload from raw packet.
