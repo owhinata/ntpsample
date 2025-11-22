@@ -1,0 +1,8 @@
+<Project>
+  <!-- Run CSharpier before each build (local .NET tool). -->
+  <Target Name="FormatWithCSharpier" BeforeTargets="Build">
+    <Exec Command="dotnet tool restore" WorkingDirectory="$(MSBuildThisFileDirectory)" />
+    <!-- Format the entire project directory. -->
+    <Exec Command="dotnet csharpier format ." WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+</Project>

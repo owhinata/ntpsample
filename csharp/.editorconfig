@@ -1,0 +1,51 @@
+root = true
+
+# General
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+# C# files
+[*.cs]
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = true
+csharp_new_line_before_open_brace = all
+csharp_preferred_modifier_order = public, private, protected, internal, static, extern, new, virtual, abstract, sealed, override, readonly, unsafe, volatile, async:suggestion
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+csharp_style_namespace_declarations = file_scoped:suggestion
+
+# Naming styles
+# Styles
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_naming_style.camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.s_prefix_camel_case.capitalization = camel_case
+dotnet_naming_style.s_prefix_camel_case.required_prefix = s_
+
+# Symbols
+dotnet_naming_symbols.private_like_fields.applicable_kinds = field
+dotnet_naming_symbols.private_like_fields.applicable_accessibilities = private, protected, internal, protected_internal, private_protected
+dotnet_naming_symbols.static_fields.applicable_kinds = field
+dotnet_naming_symbols.static_fields.required_modifiers = static
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.required_modifiers = const
+
+# Rules
+dotnet_naming_rule.private_like_fields_underscore_camel_case.symbols = private_like_fields
+dotnet_naming_rule.private_like_fields_underscore_camel_case.style = underscore_camel_case
+dotnet_naming_rule.private_like_fields_underscore_camel_case.severity = warning
+
+dotnet_naming_rule.static_fields_s_prefix_camel_case.symbols = static_fields
+dotnet_naming_rule.static_fields_s_prefix_camel_case.style = s_prefix_camel_case
+dotnet_naming_rule.static_fields_s_prefix_camel_case.severity = suggestion
+
+dotnet_naming_rule.constants_pascal_case.symbols = constants
+dotnet_naming_rule.constants_pascal_case.style = pascal_case
+dotnet_naming_rule.constants_pascal_case.severity = warning
