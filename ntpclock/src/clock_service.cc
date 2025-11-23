@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -147,6 +148,8 @@ std::ostream& operator<<(std::ostream& os, const Status& s) {
 struct ntpclock::ClockService::Impl {
   // TimeSource is immutable during execution (set at Start, cleared at Stop)
   ntpserver::TimeSource* time_source = nullptr;
+  std::unique_ptr<ntpserver::TimeSource>
+      owned_time_source;  // Default time source if not injected
 
   Options opts{Options::Builder().Build()};
   std::mutex opts_mtx;
@@ -761,13 +764,18 @@ ntpclock::ClockService::~ClockService() { Stop(); }
 bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
                                    const std::string& ip, uint16_t port,
                                    const Options& opt) {
-  // Use platform default TimeSource if time_source is nullptr
-  if (!time_source) {
-    time_source = &ntpserver::platform::GetDefaultTimeSource();
-  }
-
   Stop();
-  p_->time_source = time_source;
+
+  // Set time source (create default if nullptr)
+  if (time_source) {
+    p_->time_source = time_source;
+    // Release owned instance when using external time source
+    p_->owned_time_source.reset();
+  } else {
+    // Create platform-specific default time source
+    p_->owned_time_source = ntpserver::platform::CreateDefaultTimeSource();
+    p_->time_source = p_->owned_time_source.get();
+  }
 
   {
     std::lock_guard<std::mutex> lk(p_->opts_mtx);
@@ -777,9 +785,10 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   p_->vendor_hint_processor.SetLogSink(p_->log_callback_);
 
   // Open UDP socket for persistent connection
-  auto get_time = [time_source]() -> ntpserver::TimeSpec {
-    assert(time_source != nullptr && "time_source must be set during Start()");
-    return time_source->NowUnix();
+  auto get_time = [impl = p_.get()]() -> ntpserver::TimeSpec {
+    assert(impl->time_source != nullptr &&
+           "time_source must be set during Start()");
+    return impl->time_source->NowUnix();
   };
   auto log_fn = [impl = p_.get()](const std::string& msg) {
     if (impl) impl->ReportSocketError(msg);

@@ -72,16 +72,18 @@ int main(int argc, char** argv) {
   Logger logger(debug);
   auto log_callback = [&logger](const std::string& msg) { logger.Log(msg); };
 
-  ntpserver::NtpServer server;
-  auto& ts = ntpserver::platform::GetDefaultTimeSource();
-  ts.SetRate(init_rate);
+  // Create platform-specific time source
+  auto ts = ntpserver::platform::CreateDefaultTimeSource();
+  ts->SetRate(init_rate);
   if (init_abs != 0.0)
-    ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));
+    ts->SetAbsolute(ntpserver::TimeSpec::FromDouble(init_abs));
+
+  ntpserver::NtpServer server;
 
   // Build options with logger (used for Start/Stop cycles)
   auto opts = ntpserver::Options::Builder().LogSink(log_callback).Build();
 
-  if (!server.Start(port, &ts, opts)) {
+  if (!server.Start(port, ts.get(), opts)) {
     std::fprintf(stderr, "failed to start ntp server\n");
     return 1;
   }
@@ -106,23 +108,23 @@ int main(int argc, char** argv) {
       break;
     }
     if (std::strcmp(line, "now") == 0) {
-      double now = ts.NowUnix().ToDouble();
+      double now = ts->NowUnix().ToDouble();
       std::printf("now=%.6f\n", now);
       continue;
     }
     if (std::strncmp(line, "rate ", 5) == 0) {
       double r = std::atof(line + 5);
-      double before = ts.NowUnix().ToDouble();
+      double before = ts->NowUnix().ToDouble();
 
       // Stop -> change -> Start
       server.Stop();
-      ts.SetRate(r);
-      if (!server.Start(port, &ts, opts)) {
+      ts->SetRate(r);
+      if (!server.Start(port, ts.get(), opts)) {
         std::fprintf(stderr, "Failed to restart server\n");
         return 1;
       }
 
-      double after = ts.NowUnix().ToDouble();
+      double after = ts->NowUnix().ToDouble();
       std::ostringstream oss;
       oss << "Server restarted with rate=" << r << " before=" << before
           << " after=" << after;
@@ -131,17 +133,17 @@ int main(int argc, char** argv) {
     }
     if (std::strncmp(line, "abs ", 4) == 0) {
       double t = std::atof(line + 4);
-      double before = ts.NowUnix().ToDouble();
+      double before = ts->NowUnix().ToDouble();
 
       // Stop -> change -> Start
       server.Stop();
-      ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(t));
-      if (!server.Start(port, &ts, opts)) {
+      ts->SetAbsolute(ntpserver::TimeSpec::FromDouble(t));
+      if (!server.Start(port, ts.get(), opts)) {
         std::fprintf(stderr, "Failed to restart server\n");
         return 1;
       }
 
-      double after = ts.NowUnix().ToDouble();
+      double after = ts->NowUnix().ToDouble();
       std::ostringstream oss;
       oss << "Server restarted with absolute=" << t << " before=" << before
           << " after=" << after;
@@ -150,18 +152,18 @@ int main(int argc, char** argv) {
     }
     if (std::strncmp(line, "add ", 4) == 0) {
       double d = std::atof(line + 4);
-      double before = ts.NowUnix().ToDouble();
+      double before = ts->NowUnix().ToDouble();
 
       // Stop -> change -> Start
       server.Stop();
       // Use absolute update to avoid cumulative rounding and ensure exact step.
-      ts.SetAbsolute(ntpserver::TimeSpec::FromDouble(before + d));
-      if (!server.Start(port, &ts, opts)) {
+      ts->SetAbsolute(ntpserver::TimeSpec::FromDouble(before + d));
+      if (!server.Start(port, ts.get(), opts)) {
         std::fprintf(stderr, "Failed to restart server\n");
         return 1;
       }
 
-      double after = ts.NowUnix().ToDouble();
+      double after = ts->NowUnix().ToDouble();
       std::ostringstream oss;
       oss << "Server restarted with offset " << (d >= 0 ? "+" : "") << d
           << " before=" << before << " after=" << after
@@ -170,18 +172,18 @@ int main(int argc, char** argv) {
       continue;
     }
     if (std::strcmp(line, "reset") == 0) {
-      double before = ts.NowUnix().ToDouble();
-      double rate_before = ts.GetRate();
+      double before = ts->NowUnix().ToDouble();
+      double rate_before = ts->GetRate();
 
       // Stop -> change -> Start
       server.Stop();
-      ts.ResetToRealTime();
-      if (!server.Start(port, &ts, opts)) {
+      ts->ResetToRealTime();
+      if (!server.Start(port, ts.get(), opts)) {
         std::fprintf(stderr, "Failed to restart server\n");
         return 1;
       }
 
-      double after = ts.NowUnix().ToDouble();
+      double after = ts->NowUnix().ToDouble();
       std::ostringstream oss;
       oss << "Server restarted (reset to real-time) before=" << before
           << " (rate=" << rate_before << ") after=" << after << " (rate=1.0)";

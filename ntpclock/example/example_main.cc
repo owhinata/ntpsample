@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "ntpclock/clock_service.hpp"
-#include "ntpserver/platform/default_time_source.hpp"
 
 namespace {
 /**

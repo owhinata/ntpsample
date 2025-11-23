@@ -21,7 +21,6 @@
 #include <thread>
 
 #include "ntpserver/ntp_server.hpp"
-#include "ntpserver/platform/default_time_source.hpp"
 
 using ntpclock::ClockService;
 using ntpclock::Options;

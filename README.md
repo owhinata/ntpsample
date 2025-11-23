@@ -174,7 +174,7 @@ The implementation provides cross-platform compatibility through several abstrac
 2. **Time Source Abstraction**:
    - Windows: `QpcClock` using `QueryPerformanceCounter`
    - POSIX: `MonotonicClock` using `clock_gettime(CLOCK_MONOTONIC)`
-   - Platform-independent access: `platform::GetDefaultTimeSource()`
+   - Platform-independent factory: `platform::CreateDefaultTimeSource()` returns `std::unique_ptr<TimeSource>`
 
 3. **Build System**:
    - CMake automatically detects the platform and compiles the appropriate implementations

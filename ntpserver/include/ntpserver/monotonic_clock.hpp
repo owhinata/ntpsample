@@ -10,6 +10,8 @@
  */
 #pragma once
 
+#include <memory>
+
 #include "ntpserver/export.hpp"
 #include "ntpserver/time_source.hpp"
 
@@ -26,11 +28,14 @@ namespace ntpserver {
  */
 class NTP_SERVER_API MonotonicClock : public TimeSource {
  public:
-  /**
-   * @brief Access the singleton instance.
-   * @return Reference to the global MonotonicClock instance.
-   */
-  static MonotonicClock& Instance();
+  MonotonicClock();
+  ~MonotonicClock() override;
+
+  // Non-copyable, non-movable
+  MonotonicClock(const MonotonicClock&) = delete;
+  MonotonicClock& operator=(const MonotonicClock&) = delete;
+  MonotonicClock(MonotonicClock&&) = delete;
+  MonotonicClock& operator=(MonotonicClock&&) = delete;
 
   // TimeSource interface implementation
   TimeSpec NowUnix() override;
@@ -41,15 +46,8 @@ class NTP_SERVER_API MonotonicClock : public TimeSource {
   double GetRate() const override;
 
  private:
-  MonotonicClock();
-  ~MonotonicClock() override = default;
-
-  // Non-copyable, non-movable
-  MonotonicClock(const MonotonicClock&) = delete;
-  MonotonicClock& operator=(const MonotonicClock&) = delete;
-
   struct Impl;
-  Impl* impl_;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace ntpserver

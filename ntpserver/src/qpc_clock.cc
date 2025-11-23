@@ -109,9 +109,4 @@ double QpcClock::GetRate() const {
   return rate_;
 }
 
-QpcClock& QpcClock::Instance() {
-  static QpcClock ut;
-  return ut;
-}
-
 }  // namespace ntpserver

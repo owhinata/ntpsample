@@ -21,6 +21,12 @@ class QpcClock : public TimeSource {
   QpcClock();
   ~QpcClock() override = default;
 
+  // Non-copyable, non-movable
+  QpcClock(const QpcClock&) = delete;
+  QpcClock& operator=(const QpcClock&) = delete;
+  QpcClock(QpcClock&&) = delete;
+  QpcClock& operator=(QpcClock&&) = delete;
+
   /** Returns current time. */
   TimeSpec NowUnix() override;
 
@@ -35,9 +41,6 @@ class QpcClock : public TimeSource {
   void SetAbsoluteAndRate(const TimeSpec& time, double rate) override;
   /** Resets to real-time (system clock) with rate 1.0. */
   void ResetToRealTime() override;
-
-  /** Singleton accessor for convenience. */
-  static QpcClock& Instance();
 
  private:
   /** Seconds elapsed since last anchor point (qpc_t0_) measured via QPC. */

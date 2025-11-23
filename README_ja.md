@@ -174,7 +174,7 @@ add 31536000    # 1年分（31536000秒）を追加
 2. **時刻ソース抽象化**:
    - Windows: `QpcClock` (`QueryPerformanceCounter`を使用)
    - POSIX: `MonotonicClock` (`clock_gettime(CLOCK_MONOTONIC)`を使用)
-   - プラットフォーム非依存のアクセス: `platform::GetDefaultTimeSource()`
+   - プラットフォーム非依存のファクトリ: `platform::CreateDefaultTimeSource()` は `std::unique_ptr<TimeSource>` を返す
 
 3. **ビルドシステム**:
    - CMakeが自動的にプラットフォームを検出し、適切な実装をコンパイル

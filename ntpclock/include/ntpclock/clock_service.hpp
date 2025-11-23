@@ -28,7 +28,8 @@ namespace ntpclock {
  * @brief Immutable options for ClockService.
  *
  * Use the Builder to construct instances. All fields are read-only via
- * getters. Time source defaults to platform::GetDefaultTimeSource().
+ * getters. Time source defaults to platform-specific clock (MonotonicClock on
+ * POSIX, QpcClock on Windows).
  */
 class Options {
  public:
@@ -162,8 +163,8 @@ class ClockService {
   /**
    * @brief Start background synchronization.
    * @param time_source Local time source (must remain valid until Stop).
-   *                    If nullptr, uses platform::GetDefaultTimeSource() as
-   * default.
+   *                    If nullptr, creates platform-specific default
+   *                    (MonotonicClock on POSIX, QpcClock on Windows).
    * @param ip  IPv4 address in numeric form (no DNS).
    * @param port UDP port of the server.
    * @param opt  Immutable options snapshot.

@@ -1,12 +1,11 @@
 // Copyright (c) 2025
 /**
  * @file default_time_source.hpp
- * @brief Platform-agnostic access to default TimeSource.
- *
- * Provides a unified way to access the platform's default TimeSource
- * implementation without platform-specific includes in application code.
+ * @brief Platform-specific default TimeSource factory.
  */
 #pragma once
+
+#include <memory>
 
 #include "ntpserver/time_source.hpp"
 
@@ -14,17 +13,10 @@ namespace ntpserver {
 namespace platform {
 
 /**
- * @brief Get the default TimeSource for this platform.
- *
- * Returns a reference to the platform-specific default TimeSource:
- * - Windows: QpcClock (QueryPerformanceCounter-based)
- * - POSIX (Linux/macOS): MonotonicClock (clock_gettime-based)
- *
- * The returned instance is a singleton and thread-safe.
- *
- * @return Reference to the default TimeSource instance.
+ * @brief Creates a platform-specific default TimeSource.
+ * @return Unique pointer to MonotonicClock (POSIX) or QpcClock (Windows).
  */
-TimeSource& GetDefaultTimeSource();
+std::unique_ptr<TimeSource> CreateDefaultTimeSource();
 
 }  // namespace platform
 }  // namespace ntpserver

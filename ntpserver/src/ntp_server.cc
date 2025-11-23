@@ -132,14 +132,20 @@ class NtpServer::Impl {
     // Increment epoch number
     epoch_++;
 
-    // Set time source (use QpcClock if nullptr)
-    time_source_ = time_source;
+    // Set time source (create default if nullptr)
+    if (time_source) {
+      time_source_ = time_source;
+      // Release owned instance when using external time source
+      owned_time_source_.reset();
+    } else {
+      // Create platform-specific default time source
+      owned_time_source_ = platform::CreateDefaultTimeSource();
+      time_source_ = owned_time_source_.get();
+    }
 
     // Capture ABS/RATE values for this epoch
-    TimeSource* ts =
-        time_source_ ? time_source_ : &platform::GetDefaultTimeSource();
-    epoch_abs_ = ts->NowUnix();
-    epoch_rate_ = ts->GetRate();
+    epoch_abs_ = time_source_->NowUnix();
+    epoch_rate_ = time_source_->GetRate();
 
     if (log_callback_) {
       std::ostringstream oss;
@@ -185,10 +191,8 @@ class NtpServer::Impl {
   }
 
   void NotifyControlSnapshot() {
-    TimeSource* ts =
-        time_source_ ? time_source_ : &platform::GetDefaultTimeSource();
     if (!socket_ || !socket_->IsValid()) return;
-    const TimeSpec now = ts->NowUnix();
+    const TimeSpec now = time_source_->NowUnix();
 
     // mode=5 (broadcast) for Push notifications
     NtpPacket resp{};
@@ -233,12 +237,9 @@ class NtpServer::Impl {
 
   /** Main loop: wait for datagrams and respond. */
   void Loop() {
-    TimeSource* ts =
-        time_source_ ? time_source_ : &platform::GetDefaultTimeSource();
-
     while (running_.load()) {
       if (!WaitReadable(/*timeout_us=*/200000)) continue;
-      HandleSingleDatagram(ts);
+      HandleSingleDatagram(time_source_);
     }
   }
 
@@ -399,6 +400,8 @@ class NtpServer::Impl {
   std::mutex start_stop_mtx_;
 
   TimeSource* time_source_{nullptr};
+  std::unique_ptr<TimeSource>
+      owned_time_source_;  // Default time source if not injected
   uint8_t stratum_{1};
   int8_t precision_{-20};
   uint32_t ref_id_{Options::kDefaultRefId};

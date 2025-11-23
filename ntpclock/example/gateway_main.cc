@@ -128,12 +128,12 @@ int main(int argc, char** argv) {
   // Create shared TimeSource for both ClockService and NtpServer
   // This allows vendor hints (rate/abs) to propagate from upstream to
   // downstream
-  ntpserver::TimeSource& time_source =
-      ntpserver::platform::GetDefaultTimeSource();
+  auto time_source = ntpserver::platform::CreateDefaultTimeSource();
 
   // Create ClockService to sync with upstream server
   ntpclock::ClockService clock_service;
-  if (!clock_service.Start(&time_source, upstream_ip, upstream_port, opts)) {
+  if (!clock_service.Start(time_source.get(), upstream_ip, upstream_port,
+                           opts)) {
     std::fprintf(stderr, "Failed to start ClockService\n");
     return 1;
   }
@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
 
   // Create NtpServer to serve downstream clients using the same TimeSource
   ntpserver::NtpServer server;
-  if (!server.Start(serve_port, &time_source, server_opts)) {
+  if (!server.Start(serve_port, time_source.get(), server_opts)) {
     std::fprintf(stderr, "Failed to start NtpServer on port %u\n", serve_port);
     clock_service.Stop();
     return 1;
@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
         last_epoch = st.epoch;
         server.Stop();
         // time_source is already updated by ClockService
-        if (!server.Start(serve_port, &time_source, server_opts)) {
+        if (!server.Start(serve_port, time_source.get(), server_opts)) {
           std::fprintf(stderr, "\nFailed to restart NtpServer\n");
           clock_service.Stop();
           return 1;

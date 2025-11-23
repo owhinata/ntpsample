@@ -48,7 +48,11 @@ struct MonotonicClock::Impl {
   }
 };
 
-MonotonicClock::MonotonicClock() : impl_(new Impl) { ResetToRealTime(); }
+MonotonicClock::MonotonicClock() : impl_(std::make_unique<Impl>()) {
+  ResetToRealTime();
+}
+
+MonotonicClock::~MonotonicClock() = default;
 
 TimeSpec MonotonicClock::NowUnix() {
   std::lock_guard<std::mutex> lk(impl_->mtx_);
@@ -114,11 +118,6 @@ void MonotonicClock::ResetToRealTime() {
 double MonotonicClock::GetRate() const {
   std::lock_guard<std::mutex> lk(impl_->mtx_);
   return impl_->rate_;
-}
-
-MonotonicClock& MonotonicClock::Instance() {
-  static MonotonicClock clock;
-  return clock;
 }
 
 }  // namespace ntpserver
