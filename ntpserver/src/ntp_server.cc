@@ -126,8 +126,12 @@ class NtpServer::Impl {
   ~Impl() { Stop(); }
 
   bool Start(uint16_t port, TimeSource* time_source, const Options& options) {
-    std::lock_guard<std::mutex> lock(start_stop_mtx_);
-    if (running_.load()) return true;
+    // CAS to prevent concurrent Start calls
+    State expected = State::Stopped;
+    if (!state_.compare_exchange_strong(expected, State::Starting)) {
+      // Already running, starting, or stopping
+      return expected == State::Running;
+    }
 
     // Increment epoch number
     epoch_++;
@@ -163,6 +167,7 @@ class NtpServer::Impl {
     log_callback_ = options.LogSink();
     // Don't call stats_.Reset() to persist statistics across Start/Stop
     if (!CreateAndBindSocket(port)) {
+      state_.store(State::Stopped, std::memory_order_release);
       return false;
     }
 
@@ -171,23 +176,35 @@ class NtpServer::Impl {
       NotifyControlSnapshot();
     }
 
-    running_.store(true);
+    // Set Running BEFORE thread creation to avoid race
+    state_.store(State::Running, std::memory_order_release);
     thread_ = std::thread([this]() { Loop(); });
     return true;
   }
 
   void Stop() {
-    std::lock_guard<std::mutex> lock(start_stop_mtx_);
-    if (!running_.exchange(false)) return;
+    // Try to transition from Running or Starting to Stopping
+    State expected = State::Running;
+    if (!state_.compare_exchange_strong(expected, State::Stopping)) {
+      // If not Running, try Starting
+      expected = State::Starting;
+      if (!state_.compare_exchange_strong(expected, State::Stopping)) {
+        // Already Stopped or Stopping
+        return;
+      }
+    }
+
+    // Close socket to unblock WaitReadable before join
+    if (socket_ && socket_->IsValid()) {
+      socket_->Close();
+    }
 
     if (thread_.joinable()) {
-      // Wake WaitReadable by setting a short timeout before join
       thread_.join();
     }
-    if (socket_) {
-      socket_->Close();
-      socket_.reset();
-    }
+
+    socket_.reset();
+    state_.store(State::Stopped, std::memory_order_release);
   }
 
   void NotifyControlSnapshot() {
@@ -237,10 +254,12 @@ class NtpServer::Impl {
 
   /** Main loop: wait for datagrams and respond. */
   void Loop() {
-    while (running_.load()) {
+    State s;
+    while ((s = state_.load(std::memory_order_acquire)) == State::Running) {
       if (!WaitReadable(/*timeout_us=*/200000)) continue;
       HandleSingleDatagram(time_source_);
     }
+    // Exit immediately if Stopping (even if Starting transitioned to Stopping)
   }
 
   /** Waits for readability with a microsecond timeout. */
@@ -394,10 +413,11 @@ class NtpServer::Impl {
     client_tracker_.Remember(cli, now);
   }
 
+  enum class State : uint8_t { Stopped, Starting, Running, Stopping };
+
   std::thread thread_;
-  std::atomic<bool> running_{false};
+  std::atomic<State> state_{State::Stopped};
   std::unique_ptr<platform::ISocket> socket_;
-  std::mutex start_stop_mtx_;
 
   TimeSource* time_source_{nullptr};
   std::unique_ptr<TimeSource>

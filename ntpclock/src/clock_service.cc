@@ -146,6 +146,8 @@ std::ostream& operator<<(std::ostream& os, const Status& s) {
 
 // ---------------- Impl ----------------
 struct ntpclock::ClockService::Impl {
+  enum class State : uint8_t { Stopped, Starting, Running, Stopping };
+
   // TimeSource is immutable during execution (set at Start, cleared at Stop)
   ntpserver::TimeSource* time_source = nullptr;
   std::unique_ptr<ntpserver::TimeSource>
@@ -154,7 +156,7 @@ struct ntpclock::ClockService::Impl {
   Options opts{Options::Builder().Build()};
   std::mutex opts_mtx;
 
-  std::atomic<bool> running{false};
+  std::atomic<State> state{State::Stopped};
   std::thread thread;
 
   // Status
@@ -705,7 +707,7 @@ void ntpclock::ClockService::Impl::Loop() {
   int good_samples = 0;
   auto next_poll_time = std::chrono::steady_clock::now();
 
-  while (running.load(std::memory_order_acquire)) {
+  while (state.load(std::memory_order_acquire) == State::Running) {
     // 1. Snapshot configuration for this iteration
     auto snapshot = [&]() {
       std::lock_guard<std::mutex> lk(opts_mtx);
@@ -764,7 +766,21 @@ ntpclock::ClockService::~ClockService() { Stop(); }
 bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
                                    const std::string& ip, uint16_t port,
                                    const Options& opt) {
-  Stop();
+  // CAS to prevent concurrent Start calls
+  Impl::State expected = Impl::State::Stopped;
+  if (!p_->state.compare_exchange_strong(expected, Impl::State::Starting)) {
+    // Already running, starting, or stopping - call Stop first
+    if (expected != Impl::State::Stopped) {
+      Stop();
+      // Retry CAS after Stop
+      expected = Impl::State::Stopped;
+      if (!p_->state.compare_exchange_strong(expected, Impl::State::Starting)) {
+        return false;  // Still can't start
+      }
+    } else {
+      return false;
+    }
+  }
 
   // Set time source (create default if nullptr)
   if (time_source) {
@@ -795,10 +811,12 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   };
   if (!p_->udp_socket.Open(ip, port, get_time, log_fn)) {
     p_->time_source = nullptr;
+    p_->state.store(Impl::State::Stopped, std::memory_order_release);
     return false;
   }
 
-  p_->running.store(true, std::memory_order_release);
+  // Set Running BEFORE thread creation to avoid race
+  p_->state.store(Impl::State::Running, std::memory_order_release);
   p_->thread = std::thread([this]() { p_->Loop(); });
   return true;
 }
@@ -809,10 +827,21 @@ bool ntpclock::ClockService::Start(const std::string& ip, uint16_t port,
 }
 
 void ntpclock::ClockService::Stop() {
-  if (!p_->running.exchange(false)) return;
+  // Try to transition from Running or Starting to Stopping
+  Impl::State expected = Impl::State::Running;
+  if (!p_->state.compare_exchange_strong(expected, Impl::State::Stopping)) {
+    // If not Running, try Starting
+    expected = Impl::State::Starting;
+    if (!p_->state.compare_exchange_strong(expected, Impl::State::Stopping)) {
+      // Already Stopped or Stopping
+      return;
+    }
+  }
+
   p_->udp_socket.Close();  // Close socket first to unblock receive thread
   if (p_->thread.joinable()) p_->thread.join();
   p_->time_source = nullptr;
+  p_->state.store(Impl::State::Stopped, std::memory_order_release);
 }
 
 ntpserver::TimeSpec ntpclock::ClockService::NowUnix() const {
