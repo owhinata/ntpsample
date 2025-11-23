@@ -769,17 +769,8 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
   // CAS to prevent concurrent Start calls
   Impl::State expected = Impl::State::Stopped;
   if (!p_->state.compare_exchange_strong(expected, Impl::State::Starting)) {
-    // Already running, starting, or stopping - call Stop first
-    if (expected != Impl::State::Stopped) {
-      Stop();
-      // Retry CAS after Stop
-      expected = Impl::State::Stopped;
-      if (!p_->state.compare_exchange_strong(expected, Impl::State::Starting)) {
-        return false;  // Still can't start
-      }
-    } else {
-      return false;
-    }
+    // Already running, starting, or stopping
+    return expected == Impl::State::Running;
   }
 
   // Set time source (create default if nullptr)
@@ -810,6 +801,15 @@ bool ntpclock::ClockService::Start(ntpserver::TimeSource* time_source,
     if (impl) impl->ReportSocketError(msg);
   };
   if (!p_->udp_socket.Open(ip, port, get_time, log_fn)) {
+    p_->time_source = nullptr;
+    p_->state.store(Impl::State::Stopped, std::memory_order_release);
+    return false;
+  }
+
+  // Check if Stop() was called during initialization (Starting -> Stopping)
+  Impl::State current = p_->state.load(std::memory_order_acquire);
+  if (current == Impl::State::Stopping) {
+    p_->udp_socket.Close();
     p_->time_source = nullptr;
     p_->state.store(Impl::State::Stopped, std::memory_order_release);
     return false;

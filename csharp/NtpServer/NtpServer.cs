@@ -13,9 +13,15 @@ namespace NtpServer;
 /// </summary>
 public class NtpServer : IDisposable
 {
-    private readonly object _lock = new();
-    private readonly SemaphoreSlim _lifecycleSemaphore = new(1, 1); // Ensures Start/Stop mutual exclusion
-    private bool _running;
+    private enum State : byte
+    {
+        Stopped,
+        Starting,
+        Running,
+        Stopping,
+    }
+
+    private int _state = (int)State.Stopped; // Atomic state machine
     private Thread? _workerThread;
     private UdpClient? _socket;
     private ITimeSource? _timeSource;
@@ -41,121 +47,113 @@ public class NtpServer : IDisposable
     /// <returns>true on success, false on failure.</returns>
     public bool Start(ushort port = 9123, ITimeSource? timeSource = null, Options? options = null)
     {
-        // Acquire lifecycle semaphore to ensure mutual exclusion with Stop()
-        // This prevents race conditions with socket binding/cleanup
-        if (!_lifecycleSemaphore.Wait(TimeSpan.FromSeconds(5)))
+        // CAS to prevent concurrent Start calls
+        var previous = Interlocked.CompareExchange(
+            ref _state,
+            (int)State.Starting,
+            (int)State.Stopped
+        );
+        if ((State)previous != State.Stopped)
         {
-            // Timeout waiting for Stop() to complete
+            // Already running, starting, or stopping
+            return (State)previous == State.Running;
+        }
+
+        // Increment epoch number
+        _epoch++;
+
+        // Set time source (use StopwatchClock if null)
+        _timeSource = timeSource ?? new StopwatchClock();
+        _options = options ?? new Options.Builder().Build();
+
+        // Capture ABS/RATE values for this epoch
+        _epochAbs = _timeSource.NowUnix();
+        _epochRate = _timeSource.GetRate();
+
+        _options.LogSink?.Invoke(
+            $"[DEBUG Server] Start: epoch={_epoch} epoch_abs={_epochAbs} epoch_rate={_epochRate}"
+        );
+
+        // Configure client retention
+        _clientTracker.SetRetention(_options.ClientRetention);
+
+        // Create and bind UDP socket
+        try
+        {
+            _socket = new UdpClient(port);
+            _socket.Client.ReceiveTimeout = 100; // 100ms timeout for graceful shutdown
+        }
+        catch (Exception ex)
+        {
+            _stats.SetLastError($"Failed to bind port {port}: {ex.Message}");
+            _options.LogSink?.Invoke($"[ERROR] {_stats.GetLastError()}");
+            Interlocked.Exchange(ref _state, (int)State.Stopped);
             return false;
         }
 
-        try
+        // Check if Stop() was called during initialization (Starting -> Stopping)
+        if (
+            (State)Interlocked.CompareExchange(ref _state, (int)State.Stopping, (int)State.Stopping)
+            == State.Stopping
+        )
         {
-            lock (_lock)
-            {
-                if (_running)
-                    return true;
-
-                // Increment epoch number
-                _epoch++;
-
-                // Set time source (use StopwatchClock if null)
-                _timeSource = timeSource ?? new StopwatchClock();
-                _options = options ?? new Options.Builder().Build();
-
-                // Capture ABS/RATE values for this epoch
-                _epochAbs = _timeSource.NowUnix();
-                _epochRate = _timeSource.GetRate();
-
-                _options.LogSink?.Invoke(
-                    $"[DEBUG Server] Start: epoch={_epoch} epoch_abs={_epochAbs} epoch_rate={_epochRate}"
-                );
-
-                // Configure client retention
-                _clientTracker.SetRetention(_options.ClientRetention);
-
-                // Create and bind UDP socket
-                try
-                {
-                    _socket = new UdpClient(port);
-                    _socket.Client.ReceiveTimeout = 100; // 100ms timeout for graceful shutdown
-                }
-                catch (Exception ex)
-                {
-                    _stats.SetLastError($"Failed to bind port {port}: {ex.Message}");
-                    _options.LogSink?.Invoke($"[ERROR] {_stats.GetLastError()}");
-                    return false;
-                }
-
-                // Start worker thread
-                _running = true;
-                _cts = new CancellationTokenSource();
-                _workerThread = new Thread(WorkerLoop) { IsBackground = false, Name = "NtpServer" };
-                _workerThread.Start();
-
-                // Push notification if ClientTracker not empty
-                if (_clientTracker.Count > 0)
-                {
-                    NotifyControlSnapshot();
-                }
-
-                _options.LogSink?.Invoke($"[INFO] NTP server started on port {port}");
-                return true;
-            }
+            _socket?.Close();
+            _socket = null;
+            _timeSource = null;
+            Interlocked.Exchange(ref _state, (int)State.Stopped);
+            return false;
         }
-        finally
+
+        // Start worker thread
+        _cts = new CancellationTokenSource();
+
+        // Set Running BEFORE thread creation to avoid race
+        Interlocked.Exchange(ref _state, (int)State.Running);
+        _workerThread = new Thread(WorkerLoop) { IsBackground = false, Name = "NtpServer" };
+        _workerThread.Start();
+
+        // Push notification if ClientTracker not empty
+        if (_clientTracker.Count > 0)
         {
-            _lifecycleSemaphore.Release();
+            NotifyControlSnapshot();
         }
+
+        _options.LogSink?.Invoke($"[INFO] NTP server started on port {port}");
+        return true;
     }
 
     /// <summary>Stops the server. Safe to call multiple times.</summary>
     public void Stop()
     {
-        // Acquire lifecycle semaphore to ensure mutual exclusion with Start()
-        _lifecycleSemaphore.Wait();
-        try
+        // Try to transition from Running or Starting to Stopping
+        int expected = (int)State.Running;
+        if (Interlocked.CompareExchange(ref _state, (int)State.Stopping, expected) != expected)
         {
-            Thread? threadToJoin = null;
-            CancellationTokenSource? ctsToDispose = null;
-            UdpClient? socketToClose = null;
-
-            lock (_lock)
+            // If not Running, try Starting
+            expected = (int)State.Starting;
+            if (Interlocked.CompareExchange(ref _state, (int)State.Stopping, expected) != expected)
             {
-                if (!_running)
-                    return;
-
-                _running = false;
-                _options?.LogSink?.Invoke("[INFO] Stopping NTP server...");
-
-                // Signal cancellation and capture references
-                _cts?.Cancel();
-                threadToJoin = _workerThread;
-                ctsToDispose = _cts;
-                socketToClose = _socket;
-
-                // Clear references immediately
-                _socket = null;
-                _workerThread = null;
-                _cts = null;
-            }
-
-            // Wait for worker thread to finish (outside lock to avoid deadlock)
-            threadToJoin?.Join();
-
-            // Clean up resources (this releases the port)
-            socketToClose?.Close();
-            ctsToDispose?.Dispose();
-
-            lock (_lock)
-            {
-                _options?.LogSink?.Invoke("[INFO] NTP server stopped");
+                // Already Stopped or Stopping
+                return;
             }
         }
-        finally
-        {
-            _lifecycleSemaphore.Release();
-        }
+
+        _options?.LogSink?.Invoke("[INFO] Stopping NTP server...");
+
+        // Close socket first to unblock receive thread
+        _socket?.Close();
+
+        // Wait for worker thread to finish
+        _workerThread?.Join();
+
+        // Clean up resources
+        _cts?.Dispose();
+        _socket = null;
+        _workerThread = null;
+        _cts = null;
+
+        Interlocked.Exchange(ref _state, (int)State.Stopped);
+        _options?.LogSink?.Invoke("[INFO] NTP server stopped");
     }
 
     /// <summary>Returns latest statistics snapshot (thread-safe).</summary>
@@ -167,7 +165,6 @@ public class NtpServer : IDisposable
     public void Dispose()
     {
         Stop();
-        _lifecycleSemaphore.Dispose();
     }
 
     private void WorkerLoop()
@@ -175,7 +172,11 @@ public class NtpServer : IDisposable
         var pruneTimer = DateTime.UtcNow;
         var token = _cts?.Token ?? CancellationToken.None;
 
-        while (_running && !token.IsCancellationRequested)
+        while (
+            (State)Interlocked.CompareExchange(ref _state, (int)State.Running, (int)State.Running)
+                == State.Running
+            && !token.IsCancellationRequested
+        )
         {
             try
             {
@@ -200,7 +201,14 @@ public class NtpServer : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    if (!_running)
+                    if (
+                        (State)
+                            Interlocked.CompareExchange(
+                                ref _state,
+                                (int)State.Running,
+                                (int)State.Running
+                            ) != State.Running
+                    )
                         break; // Socket closed during shutdown
                     _stats.IncRecvErrors();
                     _stats.SetLastError($"Receive error: {ex.Message}");

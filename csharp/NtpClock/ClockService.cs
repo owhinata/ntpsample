@@ -24,9 +24,17 @@ namespace NtpClock;
 /// </summary>
 public class ClockService : IDisposable
 {
+    private enum State : byte
+    {
+        Stopped,
+        Starting,
+        Running,
+        Stopping,
+    }
+
     private const int NtpPacketSize = 48;
 
-    private readonly SemaphoreSlim _startStopLock = new SemaphoreSlim(1, 1);
+    private int _state = (int)State.Stopped; // Atomic state machine
     private readonly object _optionsLock = new object();
     private readonly object _statusLock = new object();
 
@@ -34,7 +42,6 @@ public class ClockService : IDisposable
     private Options _options;
     private Status _status = new Status();
 
-    private volatile bool _running;
     private Thread? _workerThread;
 
     private readonly ClockCorrector _clockCorrector = new ClockCorrector();
@@ -63,49 +70,66 @@ public class ClockService : IDisposable
     /// <returns>true if worker thread started.</returns>
     public bool Start(ITimeSource? timeSource, string serverIp, ushort serverPort, Options options)
     {
-        _startStopLock.Wait();
-        try
+        // CAS to prevent concurrent Start calls
+        var previous = Interlocked.CompareExchange(
+            ref _state,
+            (int)State.Starting,
+            (int)State.Stopped
+        );
+        if ((State)previous != State.Stopped)
         {
-            // Use default time source if null
-            if (timeSource == null)
-            {
-                timeSource = new StopwatchClock();
-            }
-
-            Stop();
-            _timeSource = timeSource;
-
-            lock (_optionsLock)
-            {
-                _options = options;
-            }
-
-            // Wrap the callback to match VendorHintProcessor.LogCallback signature
-            if (options.LogSink != null)
-            {
-                _vendorHintProcessor.SetLogSink(msg => options.LogSink(msg));
-            }
-
-            // Open UDP socket for persistent connection
-            TimeSpec GetTime() => _timeSource?.NowUnix() ?? new TimeSpec();
-            void LogError(string msg) => ReportSocketError(msg);
-
-            if (!_udpSocket.Open(serverIp, serverPort, GetTime, LogError))
-            {
-                _timeSource = null;
-                return false;
-            }
-
-            _running = true;
-            _workerThread = new Thread(Loop) { IsBackground = false, Name = "ClockService.Loop" };
-            _workerThread.Start();
-
-            return true;
+            // Already running, starting, or stopping
+            return (State)previous == State.Running;
         }
-        finally
+
+        // Use default time source if null
+        if (timeSource == null)
         {
-            _startStopLock.Release();
+            timeSource = new StopwatchClock();
         }
+
+        _timeSource = timeSource;
+
+        lock (_optionsLock)
+        {
+            _options = options;
+        }
+
+        // Wrap the callback to match VendorHintProcessor.LogCallback signature
+        if (options.LogSink != null)
+        {
+            _vendorHintProcessor.SetLogSink(msg => options.LogSink(msg));
+        }
+
+        // Open UDP socket for persistent connection
+        TimeSpec GetTime() => _timeSource?.NowUnix() ?? new TimeSpec();
+        void LogError(string msg) => ReportSocketError(msg);
+
+        if (!_udpSocket.Open(serverIp, serverPort, GetTime, LogError))
+        {
+            _timeSource = null;
+            Interlocked.Exchange(ref _state, (int)State.Stopped);
+            return false;
+        }
+
+        // Check if Stop() was called during initialization (Starting -> Stopping)
+        if (
+            (State)Interlocked.CompareExchange(ref _state, (int)State.Stopping, (int)State.Stopping)
+            == State.Stopping
+        )
+        {
+            _udpSocket.Close();
+            _timeSource = null;
+            Interlocked.Exchange(ref _state, (int)State.Stopped);
+            return false;
+        }
+
+        // Set Running BEFORE thread creation to avoid race
+        Interlocked.Exchange(ref _state, (int)State.Running);
+        _workerThread = new Thread(Loop) { IsBackground = false, Name = "ClockService.Loop" };
+        _workerThread.Start();
+
+        return true;
     }
 
     /// <summary>
@@ -125,10 +149,19 @@ public class ClockService : IDisposable
     /// </summary>
     public void Stop()
     {
-        if (!_running)
-            return;
+        // Try to transition from Running or Starting to Stopping
+        int expected = (int)State.Running;
+        if (Interlocked.CompareExchange(ref _state, (int)State.Stopping, expected) != expected)
+        {
+            // If not Running, try Starting
+            expected = (int)State.Starting;
+            if (Interlocked.CompareExchange(ref _state, (int)State.Stopping, expected) != expected)
+            {
+                // Already Stopped or Stopping
+                return;
+            }
+        }
 
-        _running = false;
         _udpSocket.Close(); // Close socket first to unblock receive thread
 
         if (_workerThread != null && _workerThread.IsAlive)
@@ -137,6 +170,7 @@ public class ClockService : IDisposable
         }
 
         _timeSource = null;
+        Interlocked.Exchange(ref _state, (int)State.Stopped);
     }
 
     /// <summary>
@@ -207,7 +241,6 @@ public class ClockService : IDisposable
     {
         Stop();
         _udpSocket.Dispose();
-        _startStopLock.Dispose();
     }
 
     // ======================== Private Methods ========================
@@ -217,7 +250,10 @@ public class ClockService : IDisposable
         int goodSamples = 0;
         var nextPollTime = DateTime.UtcNow;
 
-        while (_running)
+        while (
+            (State)Interlocked.CompareExchange(ref _state, (int)State.Running, (int)State.Running)
+            == State.Running
+        )
         {
             // 1. Snapshot configuration for this iteration
             Options snapshot;

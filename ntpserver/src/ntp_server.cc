@@ -171,6 +171,18 @@ class NtpServer::Impl {
       return false;
     }
 
+    // Check if Stop() was called during initialization (Starting -> Stopping)
+    State current = state_.load(std::memory_order_acquire);
+    if (current == State::Stopping) {
+      if (socket_ && socket_->IsValid()) {
+        socket_->Close();
+      }
+      socket_.reset();
+      time_source_ = nullptr;
+      state_.store(State::Stopped, std::memory_order_release);
+      return false;
+    }
+
     // Push if ClientTracker not empty
     if (!client_tracker_.GetAll().empty()) {
       NotifyControlSnapshot();
