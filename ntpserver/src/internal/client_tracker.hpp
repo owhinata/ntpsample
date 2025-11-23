@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file client_tracker.hpp
  * @brief Active NTP client endpoint tracking for server notifications.

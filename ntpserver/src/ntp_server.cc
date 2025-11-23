@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file ntp_server.cc
  * @brief Minimal NTPv4 server implementation (cross-platform UDP/IPv4).

@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 using System.Net;
 using System.Net.Sockets;
 using NtpServer.Internal;

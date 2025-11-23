@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file udp_socket.hpp
  * @brief UDP socket manager for NTP client with background receive thread.

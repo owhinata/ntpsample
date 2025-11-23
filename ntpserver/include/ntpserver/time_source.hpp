@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file time_source.hpp
  * @brief Minimal time source interface (UNIX time provider).

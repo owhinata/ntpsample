@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file ntp_types.hpp
  * @brief NTP protocol types and structures.

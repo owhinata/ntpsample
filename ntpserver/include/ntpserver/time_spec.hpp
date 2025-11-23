@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file time_spec.hpp
  * @brief Platform-independent time representation with nanosecond precision.

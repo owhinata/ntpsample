@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 #include <gtest/gtest.h>
 
 #ifdef _WIN32

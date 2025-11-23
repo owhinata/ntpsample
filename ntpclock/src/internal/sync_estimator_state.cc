@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 #include "internal/sync_estimator_state.hpp"
 
 #include <algorithm>

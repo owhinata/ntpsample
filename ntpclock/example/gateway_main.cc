@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file gateway_main.cc
  * @brief NTP Gateway: Sync with upstream server and serve to downstream

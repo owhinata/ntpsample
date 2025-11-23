@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @test TimeSpec basic operations
  * @brief Test TimeSpec construction, normalization, and arithmetic.

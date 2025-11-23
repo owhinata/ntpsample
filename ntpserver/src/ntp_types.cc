@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @file ntp_types.cc
  * @brief Implementation of NTP vendor extension (serialize/parse).

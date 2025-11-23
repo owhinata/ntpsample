@@ -1,4 +1,4 @@
-// Copyright (c) 2025 <Your Name>
+// Copyright (c) 2025 The NTP Sample Authors
 /**
  * @test NTP vendor extension serialize/parse
  * @brief Roundtrip and validation for ntp_extension (ABS/RATE).
